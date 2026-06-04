@@ -52,6 +52,24 @@ except ImportError:
     _HAS_PENNYLANE = False
 
 
+def _make_qdevice(n_qubits: int):
+    """Return (device, diff_method) preferring lightning.qubit over default.qubit.
+
+    lightning.qubit (pennylane-lightning) is a C++ statevector simulator that
+    runs 10-50x faster than default.qubit on CPU with adjoint differentiation,
+    which is ideal for the 7-11 qubit circuits used here.  Falls back to
+    default.qubit + backprop when lightning is not installed.
+    """
+    if not _HAS_PENNYLANE:
+        raise ImportError("pennylane is required.")
+    try:
+        dev = qml.device("lightning.qubit", wires=n_qubits)
+        return dev, "adjoint"
+    except Exception:
+        dev = qml.device("default.qubit", wires=n_qubits)
+        return dev, "backprop"
+
+
 # --------------------------------------------------------------------------- #
 # Entanglement topology helper
 # --------------------------------------------------------------------------- #
@@ -157,9 +175,9 @@ class QuantumQNetwork(nn.Module):
             "weights":    (self.n_layers, self.n_qubits, 3),
             "enc_scales": enc_shape,
         }
-        dev = qml.device("default.qubit", wires=self.n_qubits)
+        dev, _diff = _make_qdevice(self.n_qubits)
 
-        @qml.qnode(dev, interface="torch", diff_method="backprop")
+        @qml.qnode(dev, interface="torch", diff_method=_diff)
         def circuit(inputs, weights, enc_scales):
             # Initialisation: H superposition or |0> computational basis.
             if self.h_init:
@@ -295,9 +313,9 @@ class QAOAQNetwork(nn.Module):
             "beta":       (self.n_layers, self.n_qubits),
             "enc_scales": enc_shape,
         }
-        dev = qml.device("default.qubit", wires=self.n_qubits)
+        dev, _diff = _make_qdevice(self.n_qubits)
 
-        @qml.qnode(dev, interface="torch", diff_method="backprop")
+        @qml.qnode(dev, interface="torch", diff_method=_diff)
         def circuit(inputs, gamma, beta, enc_scales):
             if self.h_init:
                 for q in range(self.n_qubits):
@@ -517,9 +535,9 @@ class QuantumNodeQNetwork(nn.Module):
             "weights":    (self.n_layers, self.n_qubits, 3),
             "enc_scales": enc_shape,
         }
-        dev             = qml.device("default.qubit", wires=self.n_qubits)
+        dev, _diff      = _make_qdevice(self.n_qubits)
 
-        @qml.qnode(dev, interface="torch", diff_method="backprop")
+        @qml.qnode(dev, interface="torch", diff_method=_diff)
         def circuit(inputs, weights, enc_scales):
             if self.h_init:
                 for q in range(self.n_qubits):
@@ -663,9 +681,9 @@ class QAOANodeQNetwork(nn.Module):
             "beta":       (self.n_layers, self.n_qubits),
             "enc_scales": enc_shape,
         }
-        dev = qml.device("default.qubit", wires=self.n_qubits)
+        dev, _diff = _make_qdevice(self.n_qubits)
 
-        @qml.qnode(dev, interface="torch", diff_method="backprop")
+        @qml.qnode(dev, interface="torch", diff_method=_diff)
         def circuit(inputs, gamma, beta, enc_scales):
             if self.h_init:
                 for q in range(self.n_qubits):
