@@ -67,25 +67,29 @@ done
 # ============================================================
 # Locate project directory
 #
-# rorqual mounts the project filesystem via a symlink under ~/links;
-# nibi and fir expose the same path directly under ~/projects.
+# Probe common Alliance layouts in order; use the first that contains
+# quantum_qnet.py.  This handles rorqual (~/links/), nibi/fir (~/projects/),
+# and direct lustre paths (e.g. /lustre09/project/<id>/farzan97/PQC).
 # ============================================================
 _CLUSTER="${SLURM_CLUSTER_NAME:-unknown}"
-echo "[cluster] $SLURM_CLUSTER_NAME"
+echo "[cluster] $_CLUSTER"
 
-case "$_CLUSTER" in
-    rorqual)
-        _PROJ="$HOME/links/projects/def-bfarooq/farzan97/CE-PDPTW/PQC"
-        ;;
-    nibi|fir|*)
-        _PROJ="$HOME/projects/def-bfarooq/farzan97/CE-PDPTW/PQC"
-        # Fallback: some cluster configurations still symlink via ~/links.
-        [ -d "$HOME/links/projects/def-bfarooq/farzan97/CE-PDPTW/PQC" ] \
-            && _PROJ="$HOME/links/projects/def-bfarooq/farzan97/CE-PDPTW/PQC"
-        ;;
-esac
+_PROJ=""
+for _C in \
+    "$HOME/links/projects/def-bfarooq/farzan97/CE-PDPTW/PQC" \
+    "$HOME/links/projects/def-bfarooq/farzan97/PQC" \
+    "$HOME/projects/def-bfarooq/farzan97/CE-PDPTW/PQC" \
+    "$HOME/projects/def-bfarooq/farzan97/PQC" \
+    "$HOME/scratch/CE-PDPTW/PQC" \
+    "$HOME/scratch/PQC" ; do
+    [ -f "$_C/quantum_qnet.py" ] && { _PROJ="$_C"; break; }
+done
 
-cd "$_PROJ" || { echo "ERROR: project dir not found: $_PROJ"; exit 1; }
+# Last resort: the directory this script lives in is the project root.
+[ -z "$_PROJ" ] && _PROJ="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo "[project] $_PROJ"
+cd "$_PROJ" || { echo "ERROR: cannot cd to project dir: $_PROJ"; exit 1; }
 mkdir -p logs results
 
 echo "============================================================"
