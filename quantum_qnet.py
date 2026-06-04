@@ -51,23 +51,53 @@ try:
 except ImportError:
     _HAS_PENNYLANE = False
 
+# Probe lightning.qubit once at import time so every network class reuses the
+# same result without repeating the detection.  Three possible backends:
+#   lightning.qubit + adjoint  — C++ statevector, ~10-50x faster than default.qubit
+#   default.qubit   + backprop — pure-Python/torch statevector, always available
+#   (no pennylane)             — ImportError raised when a network is constructed
+_LIGHTNING_OK: bool = False
+if _HAS_PENNYLANE:
+    try:
+        import pennylane_lightning          # noqa: F401  (check the package exists)
+        _test_dev = qml.device("lightning.qubit", wires=2)
+
+        # Verify adjoint diff actually works end-to-end (version-mismatch guard).
+        import pennylane as _qml
+        @_qml.qnode(_test_dev, interface="torch", diff_method="adjoint")
+        def _probe(x):
+            _qml.RY(x[0], wires=0)
+            return _qml.expval(_qml.PauliZ(0))
+        import torch as _torch
+        _x = _torch.tensor([0.1], requires_grad=True)
+        _probe(_x)
+        del _test_dev, _probe, _x, _qml, _torch
+        _LIGHTNING_OK = True
+    except Exception:
+        _LIGHTNING_OK = False
+
 
 def _make_qdevice(n_qubits: int):
-    """Return (device, diff_method) preferring lightning.qubit over default.qubit.
+    """Return (device, diff_method), preferring lightning.qubit when available.
 
-    lightning.qubit (pennylane-lightning) is a C++ statevector simulator that
-    runs 10-50x faster than default.qubit on CPU with adjoint differentiation,
-    which is ideal for the 7-11 qubit circuits used here.  Falls back to
-    default.qubit + backprop when lightning is not installed.
+    Falls back silently to default.qubit + backprop on CPU-only machines or
+    when pennylane-lightning is not installed.
     """
     if not _HAS_PENNYLANE:
-        raise ImportError("pennylane is required.")
-    try:
-        dev = qml.device("lightning.qubit", wires=n_qubits)
-        return dev, "adjoint"
-    except Exception:
-        dev = qml.device("default.qubit", wires=n_qubits)
-        return dev, "backprop"
+        raise ImportError("pennylane is required for quantum networks.")
+    if _LIGHTNING_OK:
+        return qml.device("lightning.qubit", wires=n_qubits), "adjoint"
+    return qml.device("default.qubit", wires=n_qubits), "backprop"
+
+
+def qdevice_info() -> str:
+    """One-line string describing the active quantum simulation backend."""
+    if not _HAS_PENNYLANE:
+        return "pennylane: NOT installed"
+    backend = "lightning.qubit (adjoint)" if _LIGHTNING_OK else "default.qubit (backprop)"
+    gpu = "CUDA available" if (
+        __import__("torch").cuda.is_available()) else "CPU only"
+    return f"quantum backend: {backend}  |  torch: {gpu}"
 
 
 # --------------------------------------------------------------------------- #

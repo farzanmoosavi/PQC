@@ -53,6 +53,14 @@ def test_imports():
     return f"pennylane {qml.__version__}, torch {torch.__version__}"
 
 
+def test_runtime_info():
+    """Report active compute backends (informational, always passes)."""
+    from quantum_qnet import qdevice_info, _LIGHTNING_OK
+    gpu_str = "CUDA" if torch.cuda.is_available() else "CPU"
+    light_str = "lightning.qubit (adjoint)" if _LIGHTNING_OK else "default.qubit (backprop)"
+    return f"torch device={gpu_str}  |  quantum={light_str}"
+
+
 # --------------------------------------------------------------------------- #
 # 2. Environment
 # --------------------------------------------------------------------------- #
@@ -296,6 +304,7 @@ def main():
 
     print("[ imports ]")
     check("imports", test_imports)
+    check("runtime backends", test_runtime_info)
 
     print("\n[ environment ]")
     check("env reset",              test_env_reset)
