@@ -295,8 +295,11 @@ if __name__ == "__main__":
     p.add_argument("--n-layers",  type=int, default=3)
     p.add_argument("--fixed-instance", action="store_true",
                    help="Train on one fixed problem instance (route learning).")
+    p.add_argument("--out-prefix", default="qrl",
+                   help="Path prefix for output .txt and .pt files.")
     args = p.parse_args()
     train(model_kind=args.model, node=args.node, capacity=args.capacity,
           episodes=args.episodes, seed=args.seed,
           fixed_instance=args.fixed_instance,
+          out_prefix=args.out_prefix,
           n_qubits=args.n_qubits, n_layers=args.n_layers)

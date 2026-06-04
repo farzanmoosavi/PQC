@@ -298,7 +298,8 @@ def compare(
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="REINFORCE policy-gradient for CPDPTW")
     p.add_argument("--model",
-                   choices=["quantum", "qaoa", "classical", "classical-qaoa"],
+                   choices=["quantum", "qaoa", "classical", "classical-qaoa",
+                            "node-quantum", "node-qaoa"],
                    default="quantum")
     p.add_argument("--node",      type=int,   default=5)
     p.add_argument("--capacity",  type=int,   default=5)
@@ -315,6 +316,8 @@ if __name__ == "__main__":
                    help="Run DQN vs REINFORCE side-by-side comparison table.")
     p.add_argument("--fixed-instance", action="store_true",
                    help="Train on one fixed problem instance.")
+    p.add_argument("--out-prefix", default="reinforce",
+                   help="Path prefix for output .txt and .pt files.")
     args = p.parse_args()
 
     if args.compare:
@@ -333,6 +336,7 @@ if __name__ == "__main__":
             value_coef=args.value_coef,
             fixed_instance=args.fixed_instance,
             seed=args.seed,
+            out_prefix=args.out_prefix,
             n_qubits=args.n_qubits,
             n_layers=args.n_layers,
         )
