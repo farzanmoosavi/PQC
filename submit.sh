@@ -126,7 +126,7 @@ mkdir -p "$OUT_DIR"
 run_bg() {
     local label="$1"; shift
     echo "[start] $label"
-    python3 "$@" > "$OUT_DIR/${label}.log" 2>&1 &
+    python3 -u "$@" > "$OUT_DIR/${label}.log" 2>&1 &
     echo $! >> "$OUT_DIR/.pids"
 }
 
