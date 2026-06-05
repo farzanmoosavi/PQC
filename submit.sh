@@ -56,18 +56,24 @@ module load python/3.10 scipy-stack
 
 source ~/py310_env/bin/activate
 
-# Load CUDA matching the installed torch wheel.
-_TORCH_CUDA=$(python3 -c "import torch; print(torch.version.cuda or '')" 2>/dev/null || echo "")
-_CUDA_LOADED=0
-for _CV in "$_TORCH_CUDA" 13.2 13.1 12.6 12.2; do
-    [ -z "$_CV" ] && continue
-    if module load cuda/$_CV 2>/dev/null; then
-        echo "[cuda] Loaded cuda/$_CV"
-        _CUDA_LOADED=1
-        break
-    fi
-done
-[ $_CUDA_LOADED -eq 0 ] && echo "INFO: no CUDA module loaded — classical model uses CPU."
+# Load CUDA only for GPU jobs — CPU-only jobs must NOT load a CUDA module
+# because the cu121 torch wheel segfaults against CUDA 13.x libraries.
+MODE_EARLY="${MODE:-cpu}"
+if [ "$MODE_EARLY" = "gpu" ]; then
+    _TORCH_CUDA=$(python3 -c "import torch; print(torch.version.cuda or '')" 2>/dev/null || echo "")
+    _CUDA_LOADED=0
+    for _CV in "$_TORCH_CUDA" 13.2 13.1 12.6 12.2; do
+        [ -z "$_CV" ] && continue
+        if module load cuda/$_CV 2>/dev/null; then
+            echo "[cuda] Loaded cuda/$_CV"
+            _CUDA_LOADED=1
+            break
+        fi
+    done
+    [ $_CUDA_LOADED -eq 0 ] && echo "WARNING: no CUDA module loaded — classical model will use CPU."
+else
+    echo "[cuda] Skipped (cpu mode — quantum circuits use lightning.qubit on CPU)"
+fi
 
 # ============================================================
 # Locate project directory
