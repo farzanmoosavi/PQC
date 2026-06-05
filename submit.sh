@@ -263,9 +263,8 @@ if [ "$RUNG" = "D" ]; then
     echo "=== Rung D: hyperparameter sweep, node=$NODE ==="
     python3 sweep_experiment.py \
         --node "$NODE" \
-        --capacity "$CAPACITY" \
         --episodes "$EPISODES" \
-        --out-prefix "$OUT_DIR/sweep" \
+        --out "$OUT_DIR/sweep.csv" \
         2>&1 | tee "$OUT_DIR/sweep.log"
     echo "=== Rung D done: $(date) ==="
 fi
