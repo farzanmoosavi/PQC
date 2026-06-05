@@ -7,11 +7,7 @@
 # classical MLP also runs on CPU (fast enough for n=5 problem size).
 #
 # One-time setup (run once on ANY login node — $HOME is shared):
-#   module purge && module load python/3.10 scipy-stack
-#   virtualenv ~/qrl_env
-#   source ~/qrl_env/bin/activate
-#   pip install --upgrade pip
-#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   source ~/py310_nibi/bin/activate
 #   pip install pennylane "numpy>=2.0"
 #
 # Usage:
@@ -42,8 +38,8 @@
 module purge
 module load python/3.10 scipy-stack
 
-source "$HOME/qrl_env/bin/activate" || {
-    echo "ERROR: ~/qrl_env not found."
+source "$HOME/py310_nibi/bin/activate" || {
+    echo "ERROR: ~/py310_nibi not found."
     echo "Run the one-time setup commands shown at the top of this file."
     exit 1
 }
