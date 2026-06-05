@@ -1,33 +1,27 @@
 #!/bin/bash
 # ============================================================
 # Alliance Canada — CPDPTW Quantum-RL experiments (Chapter 6)
-# Tested clusters: nibi (H100), rorqual (L40S), fir (H100 NVL)
+# Clusters: nibi (H100), rorqual (L40S), fir (H100 NVL)
+#
+# All models run on CPU.  Quantum circuits use PennyLane default.qubit;
+# classical MLP also runs on CPU (fast enough for n=5 problem size).
+#
+# One-time setup (run once on ANY login node — $HOME is shared):
+#   module purge && module load python/3.10 scipy-stack
+#   virtualenv ~/qrl_env
+#   source ~/qrl_env/bin/activate
+#   pip install --upgrade pip
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install pennylane "numpy>=2.0"
 #
 # Usage:
-#   sbatch submit.sh                              # Rung A: DQN fixed-instance
+#   sbatch submit.sh                              # Rung A (DQN, default)
 #   sbatch --export=RUNG=B submit.sh              # Rung B: REINFORCE fixed-instance
 #   sbatch --export=RUNG=C submit.sh              # Rung C: REINFORCE policy-learning
 #   sbatch --export=RUNG=D submit.sh              # Rung D: hyperparameter sweep
 #   sbatch --export=RUNG=T submit.sh              # Rung T: smoke-test only
-#   sbatch --export=RUNG=A,EPISODES=200 submit.sh
-#   sbatch --export=RUNG=B,SEEDS="0 1" submit.sh
-#   sbatch --export=RUNG=A,FRESH=1 submit.sh      # wipe previous results, restart
-#
-# One-time setup on login node before first sbatch:
-#   module purge
-#   module load python/3.10 scipy-stack cuda/12.2
-#   virtualenv ~/py310_env
-#   source ~/py310_env/bin/activate
-#   pip install torch --index-url https://download.pytorch.org/whl/cu121
-#   pip install pennylane pennylane-lightning
-#   pip install numpy --upgrade      # PennyLane requires numpy >= 2.0
-#
-# GPU note:
-#   Classical networks run fully on the allocated GPU.
-#   Quantum PQC circuits simulate on CPU via lightning.qubit (C++ accelerated).
-#   GPU memory is used by the PyTorch compressor and output head layers only.
-#   Requesting 1 GPU is still correct for the classical baseline comparison
-#   and for any future lightning.gpu (cuQuantum) upgrade.
+#   sbatch --export=RUNG=A,EPISODES=500 submit.sh
+#   sbatch --export=RUNG=B,SEEDS="0 1 2 3 4" submit.sh
 # ============================================================
 
 #SBATCH --job-name=CE-PDPTW-qrl
@@ -41,34 +35,22 @@
 #SBATCH --mail-type=ALL
 #SBATCH --output=logs/qrl-%x-%j.out
 #SBATCH --error=logs/qrl-%x-%j.err
-# GPU note: quantum circuits run on CPU (lightning.qubit); only the classical
-# baseline uses GPU.  Request a GPU only when MODE=gpu (classical runs).
-# Default MODE=cpu runs quantum-only models in the CPU partition (shorter queue).
-# Usage:
-#   sbatch submit.sh                   # quantum models, CPU partition
-#   sbatch --export=MODE=gpu submit.sh # classical baseline, GPU partition
 
 # ============================================================
-# Environment setup
+# Environment
 # ============================================================
 module purge
 module load python/3.10 scipy-stack
 
-# Single virtualenv used across all clusters.
-# Contains CPU-only torch + pennylane (no pennylane-lightning — its C++
-# backend segfaults on fir; code falls back to default.qubit automatically).
-# Setup (one-time, on any login node):
-#   virtualenv ~/qrl_env && source ~/qrl_env/bin/activate
-#   pip install torch --index-url https://download.pytorch.org/whl/cpu
-#   pip install pennylane "numpy>=2.0"
-source "$HOME/qrl_env/bin/activate" || { echo "ERROR: ~/qrl_env not found. Run setup first."; exit 1; }
+source "$HOME/qrl_env/bin/activate" || {
+    echo "ERROR: ~/qrl_env not found."
+    echo "Run the one-time setup commands shown at the top of this file."
+    exit 1
+}
 
 # ============================================================
 # Locate project directory
-#
-# Probe common Alliance layouts in order; use the first that contains
-# quantum_qnet.py.  This handles rorqual (~/links/), nibi/fir (~/projects/),
-# and direct lustre paths (e.g. /lustre09/project/<id>/farzan97/PQC).
+# Handles rorqual (~/links/projects/...) and nibi/fir (~/projects/...)
 # ============================================================
 _CLUSTER="${SLURM_CLUSTER_NAME:-unknown}"
 echo "[cluster] $_CLUSTER"
@@ -83,27 +65,21 @@ for _C in \
     "$HOME/scratch/PQC" ; do
     [ -f "$_C/quantum_qnet.py" ] && { _PROJ="$_C"; break; }
 done
-
-# Last resort: the directory this script lives in is the project root.
 [ -z "$_PROJ" ] && _PROJ="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "[project] $_PROJ"
-cd "$_PROJ" || { echo "ERROR: cannot cd to project dir: $_PROJ"; exit 1; }
+cd "$_PROJ" || { echo "ERROR: cannot cd to $_PROJ"; exit 1; }
 mkdir -p logs results
 
 echo "============================================================"
-echo "  Job: $SLURM_JOB_ID   Rung: ${RUNG:-A}   Cluster: $_CLUSTER"
-echo "  Dir: $(pwd)"
-echo "  CPUs: $SLURM_CPUS_PER_TASK   Start: $(date)"
-if [ -n "$CUDA_VISIBLE_DEVICES" ] && [ "$CUDA_VISIBLE_DEVICES" != "NoDevFiles" ]; then
-    echo "  GPU: $CUDA_VISIBLE_DEVICES"
-else
-    echo "  GPU: none (CPU-only job)"
-fi
+echo "  Job   : $SLURM_JOB_ID"
+echo "  Rung  : ${RUNG:-A}   Cluster: $_CLUSTER"
+echo "  Dir   : $(pwd)"
+echo "  CPUs  : $SLURM_CPUS_PER_TASK   Start: $(date)"
 echo "============================================================"
 
 # ============================================================
-# Defaults (can be overridden via --export)
+# Experiment defaults (override with --export=VAR=value)
 # ============================================================
 RUNG="${RUNG:-A}"
 NODE="${NODE:-5}"
@@ -116,21 +92,9 @@ LR="${LR:-5e-4}"
 ENTROPY="${ENTROPY:-0.05}"
 FRESH="${FRESH:-0}"
 
-# MODE=cpu (default): quantum-only, no GPU needed — shorter queue times.
-# MODE=gpu           : classical baseline only, full GPU utilisation.
-MODE="${MODE:-cpu}"
+DQN_MODELS="quantum qaoa classical"
+PG_MODELS="quantum qaoa node-quantum node-qaoa classical"
 
-if [ "$MODE" = "gpu" ]; then
-    # Request GPU at runtime via scontrol (only works before the job starts,
-    # so this is a reminder; for new submissions use --gres=gpu:1 explicitly).
-    echo "[mode] gpu — classical baseline only"
-    DQN_MODELS="classical"
-    PG_MODELS="classical"
-else
-    echo "[mode] cpu — quantum models only (lightning.qubit on CPU)"
-    DQN_MODELS="quantum qaoa"
-    PG_MODELS="quantum qaoa node-quantum node-qaoa"
-fi
 OUT_DIR="results/rung${RUNG}_$(date +%Y%m%d_%H%M)"
 mkdir -p "$OUT_DIR"
 
@@ -153,7 +117,17 @@ wait_all() {
         done < "$OUT_DIR/.pids"
         rm -f "$OUT_DIR/.pids"
     fi
-    [ $failed -ne 0 ] && echo "WARNING: one or more background jobs failed — check $OUT_DIR/*.log"
+    [ $failed -ne 0 ] && echo "WARNING: one or more jobs failed — check $OUT_DIR/*.log"
+}
+
+aggregate() {
+    local prefix="$1" models="$2"
+    python3 -u aggregate_results.py \
+        --prefix "$prefix" \
+        --models "$models" \
+        --seeds  "$SEEDS" \
+        --delete-seeds \
+        >> "$OUT_DIR/aggregate.log" 2>&1
 }
 
 # ============================================================
@@ -161,127 +135,86 @@ wait_all() {
 # ============================================================
 if [ "$RUNG" = "T" ]; then
     echo "=== Rung T: smoke test ==="
-    python3 test_cluster.py --quick
-    echo "Test exit code: $?"
+    python3 -u test_cluster.py --quick
+    echo "Exit: $?"
     exit 0
 fi
 
 # ============================================================
-# Always run smoke test before any real experiment
+# Pre-flight smoke test
 # ============================================================
 echo "--- pre-flight smoke test ---"
-python3 test_cluster.py --quick || { echo "ABORT: smoke test failed."; exit 1; }
+python3 -u test_cluster.py --quick || { echo "ABORT: smoke test failed."; exit 1; }
 echo "--- smoke test passed ---"
 
 # ============================================================
-# Rung A — DQN, fixed instance, all flat+classical models
+# Rung A — DQN, fixed instance
 # ============================================================
 if [ "$RUNG" = "A" ]; then
-    echo "=== Rung A: DQN fixed-instance, node=$NODE, eps=$EPISODES, seeds=($SEEDS) ==="
+    echo "=== Rung A: DQN fixed-instance ==="
     [ "$FRESH" = "1" ] && rm -f "$OUT_DIR"/../rungA_*/*.pt "$OUT_DIR"/../rungA_*/*.txt 2>/dev/null
 
     for MODEL in $DQN_MODELS; do
         for SEED in $SEEDS; do
-            LABEL="${MODEL}_s${SEED}"
-            run_bg "$LABEL" train_qrl.py \
-                --model "$MODEL" \
-                --node "$NODE" \
-                --capacity "$CAPACITY" \
-                --episodes "$EPISODES" \
-                --n-qubits "$N_QUBITS" \
-                --n-layers "$N_LAYERS" \
-                --seed "$SEED" \
-                --fixed-instance \
-                --out-prefix "$OUT_DIR/dqn"
+            run_bg "${MODEL}_s${SEED}" train_qrl.py \
+                --model "$MODEL" --node "$NODE" --capacity "$CAPACITY" \
+                --episodes "$EPISODES" --n-qubits "$N_QUBITS" --n-layers "$N_LAYERS" \
+                --seed "$SEED" --fixed-instance --out-prefix "$OUT_DIR/dqn"
         done
     done
 
     wait_all
-    python3 -u aggregate_results.py \
-        --prefix "$OUT_DIR/dqn" \
-        --models "$DQN_MODELS" \
-        --seeds  "$SEEDS" \
-        --delete-seeds \
-        >> "$OUT_DIR/aggregate.log" 2>&1
+    aggregate "$OUT_DIR/dqn" "$DQN_MODELS"
     echo "=== Rung A done: $(date) ==="
 fi
 
 # ============================================================
-# Rung B — REINFORCE, fixed instance, all models (incl. node)
+# Rung B — REINFORCE, fixed instance
 # ============================================================
 if [ "$RUNG" = "B" ]; then
-    echo "=== Rung B: REINFORCE fixed-instance, node=$NODE, eps=$EPISODES, seeds=($SEEDS) ==="
+    echo "=== Rung B: REINFORCE fixed-instance ==="
     [ "$FRESH" = "1" ] && rm -f "$OUT_DIR"/../rungB_*/*.pt "$OUT_DIR"/../rungB_*/*.txt 2>/dev/null
 
     for MODEL in $PG_MODELS; do
         for SEED in $SEEDS; do
-            LABEL="${MODEL}_s${SEED}"
-            run_bg "$LABEL" reinforce_qrl.py \
-                --model "$MODEL" \
-                --node "$NODE" \
-                --capacity "$CAPACITY" \
-                --episodes "$EPISODES" \
-                --n-qubits "$N_QUBITS" \
-                --n-layers "$N_LAYERS" \
-                --lr "$LR" \
-                --entropy "$ENTROPY" \
-                --seed "$SEED" \
-                --fixed-instance \
-                --out-prefix "$OUT_DIR/pg"
+            run_bg "${MODEL}_s${SEED}" reinforce_qrl.py \
+                --model "$MODEL" --node "$NODE" --capacity "$CAPACITY" \
+                --episodes "$EPISODES" --n-qubits "$N_QUBITS" --n-layers "$N_LAYERS" \
+                --lr "$LR" --entropy "$ENTROPY" \
+                --seed "$SEED" --fixed-instance --out-prefix "$OUT_DIR/pg"
         done
     done
 
     wait_all
-    python3 -u aggregate_results.py \
-        --prefix "$OUT_DIR/pg" \
-        --models "$PG_MODELS" \
-        --seeds  "$SEEDS" \
-        --delete-seeds \
-        >> "$OUT_DIR/aggregate.log" 2>&1
+    aggregate "$OUT_DIR/pg" "$PG_MODELS"
     echo "=== Rung B done: $(date) ==="
 fi
 
 # ============================================================
-# Rung C — REINFORCE, policy learning (fixed_instance=False)
+# Rung C — REINFORCE, policy learning
 # ============================================================
 if [ "$RUNG" = "C" ]; then
-    echo "=== Rung C: REINFORCE policy-learning, node=$NODE, eps=$EPISODES, seeds=($SEEDS) ==="
+    echo "=== Rung C: REINFORCE policy-learning ==="
 
     for MODEL in $PG_MODELS; do
         for SEED in $SEEDS; do
-            LABEL="${MODEL}_s${SEED}"
-            run_bg "$LABEL" reinforce_qrl.py \
-                --model "$MODEL" \
-                --node "$NODE" \
-                --capacity "$CAPACITY" \
-                --episodes "$EPISODES" \
-                --n-qubits "$N_QUBITS" \
-                --n-layers "$N_LAYERS" \
-                --lr "$LR" \
-                --entropy "$ENTROPY" \
-                --seed "$SEED" \
-                --out-prefix "$OUT_DIR/policy"
+            run_bg "${MODEL}_s${SEED}" reinforce_qrl.py \
+                --model "$MODEL" --node "$NODE" --capacity "$CAPACITY" \
+                --episodes "$EPISODES" --n-qubits "$N_QUBITS" --n-layers "$N_LAYERS" \
+                --lr "$LR" --entropy "$ENTROPY" \
+                --seed "$SEED" --out-prefix "$OUT_DIR/policy"
         done
     done
 
     wait_all
-    python3 -u aggregate_results.py \
-        --prefix "$OUT_DIR/policy" \
-        --models "$PG_MODELS" \
-        --seeds  "$SEEDS" \
-        --delete-seeds \
-        >> "$OUT_DIR/aggregate.log" 2>&1
+    aggregate "$OUT_DIR/policy" "$PG_MODELS"
 
     echo "--- evaluating generalisation on held-out seeds ---"
     for MODEL in $PG_MODELS; do
-        python3 policy_eval.py \
-            --model "$MODEL" \
-            --node "$NODE" \
-            --capacity "$CAPACITY" \
-            --train-episodes "$EPISODES" \
-            --eval-seeds 20 \
-            --n-qubits "$N_QUBITS" \
-            --n-layers "$N_LAYERS" \
+        python3 -u policy_eval.py \
+            --model "$MODEL" --node "$NODE" --capacity "$CAPACITY" \
+            --train-episodes "$EPISODES" --eval-seeds 20 \
+            --n-qubits "$N_QUBITS" --n-layers "$N_LAYERS" \
             >> "$OUT_DIR/policy_eval_${MODEL}.log" 2>&1 &
     done
     wait
@@ -290,27 +223,24 @@ if [ "$RUNG" = "C" ]; then
 fi
 
 # ============================================================
-# Rung D — Hyperparameter sweep (sweep_experiment.py)
+# Rung D — Hyperparameter sweep
 # ============================================================
 if [ "$RUNG" = "D" ]; then
-    echo "=== Rung D: hyperparameter sweep, node=$NODE ==="
-    python3 sweep_experiment.py \
-        --node "$NODE" \
-        --episodes "$EPISODES" \
+    echo "=== Rung D: hyperparameter sweep ==="
+    python3 -u sweep_experiment.py \
+        --node "$NODE" --episodes "$EPISODES" \
         --out "$OUT_DIR/sweep.csv" \
         2>&1 | tee "$OUT_DIR/sweep.log"
     echo "=== Rung D done: $(date) ==="
 fi
 
 # ============================================================
-# Summarise outputs
+# Summary
 # ============================================================
 echo ""
 echo "============================================================"
-echo "  Results saved to: $OUT_DIR"
-echo "  Log files:"
-ls -lh "$OUT_DIR"/*.log 2>/dev/null || echo "  (none)"
-echo "  Checkpoints:"
-ls -lh "$OUT_DIR"/*.pt  2>/dev/null || echo "  (none)"
+echo "  Results : $OUT_DIR"
+ls -lh "$OUT_DIR"/*.log 2>/dev/null || echo "  (no logs)"
+ls -lh "$OUT_DIR"/*.pt  2>/dev/null || echo "  (no checkpoints)"
 echo "  End: $(date)"
 echo "============================================================"
