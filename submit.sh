@@ -81,7 +81,7 @@ RUNG="${RUNG:-A}"
 NODE="${NODE:-5}"
 CAPACITY="${CAPACITY:-5}"
 EPISODES="${EPISODES:-1000}"
-SEEDS="${SEEDS:-0 1 2 3 4}"
+SEEDS="${SEEDS:-0 1 2 3 4 5 6}"
 N_QUBITS="${N_QUBITS:-11}"
 N_LAYERS="${N_LAYERS:-4}"
 LR="${LR:-5e-4}"
@@ -119,9 +119,10 @@ wait_all() {
 aggregate() {
     local prefix="$1" models="$2"
     python3 -u aggregate_results.py \
-        --prefix "$prefix" \
-        --models "$models" \
-        --seeds  "$SEEDS" \
+        --prefix  "$prefix" \
+        --models  "$models" \
+        --seeds   "$SEEDS" \
+        --out-csv "$OUT_DIR/summary.csv" \
         --delete-seeds \
         >> "$OUT_DIR/aggregate.log" 2>&1
 }
