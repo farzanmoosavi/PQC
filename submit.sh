@@ -105,11 +105,11 @@ RUNG="${RUNG:-A}"
 NODE="${NODE:-5}"
 CAPACITY="${CAPACITY:-5}"
 EPISODES="${EPISODES:-1000}"
-SEEDS="${SEEDS:-0 1 2}"
-N_QUBITS="${N_QUBITS:-7}"
-N_LAYERS="${N_LAYERS:-3}"
+SEEDS="${SEEDS:-0 1 2 3 4}"
+N_QUBITS="${N_QUBITS:-11}"
+N_LAYERS="${N_LAYERS:-4}"
 LR="${LR:-5e-4}"
-ENTROPY="${ENTROPY:-0.01}"
+ENTROPY="${ENTROPY:-0.05}"
 FRESH="${FRESH:-0}"
 
 # Models for each rung (node models are REINFORCE-only due to DQN replay-buffer
@@ -182,6 +182,12 @@ if [ "$RUNG" = "A" ]; then
     done
 
     wait_all
+    python3 -u aggregate_results.py \
+        --prefix "$OUT_DIR/dqn" \
+        --models "$DQN_MODELS" \
+        --seeds  "$SEEDS" \
+        --delete-seeds \
+        >> "$OUT_DIR/aggregate.log" 2>&1
     echo "=== Rung A done: $(date) ==="
 fi
 
@@ -211,6 +217,12 @@ if [ "$RUNG" = "B" ]; then
     done
 
     wait_all
+    python3 -u aggregate_results.py \
+        --prefix "$OUT_DIR/pg" \
+        --models "$PG_MODELS" \
+        --seeds  "$SEEDS" \
+        --delete-seeds \
+        >> "$OUT_DIR/aggregate.log" 2>&1
     echo "=== Rung B done: $(date) ==="
 fi
 
@@ -238,6 +250,12 @@ if [ "$RUNG" = "C" ]; then
     done
 
     wait_all
+    python3 -u aggregate_results.py \
+        --prefix "$OUT_DIR/policy" \
+        --models "$PG_MODELS" \
+        --seeds  "$SEEDS" \
+        --delete-seeds \
+        >> "$OUT_DIR/aggregate.log" 2>&1
 
     echo "--- evaluating generalisation on held-out seeds ---"
     for MODEL in $PG_MODELS; do

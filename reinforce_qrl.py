@@ -113,7 +113,7 @@ def train_reinforce(
     episodes: int = 300,
     gamma: float = 0.99,
     lr: float = 2e-4,
-    entropy_coef: float = 0.01,   # starting value; decays to 10% by end of training
+    entropy_coef: float = 0.05,   # starting value; decays to 10% by end of training
     value_coef: float = 0.5,      # critic loss weight; 0 disables actor-critic
     fixed_instance: bool = True,
     seed: int = 0,
@@ -320,7 +320,7 @@ if __name__ == "__main__":
     p.add_argument("--n-qubits",  type=int,   default=6)
     p.add_argument("--n-layers",  type=int,   default=3)
     p.add_argument("--lr",        type=float, default=5e-4)
-    p.add_argument("--entropy",     type=float, default=0.01,
+    p.add_argument("--entropy",     type=float, default=0.05,
                    help="Entropy regularisation coefficient.")
     p.add_argument("--value-coef",  type=float, default=0.5,
                    help="Critic loss weight (0 = pure REINFORCE, no baseline).")

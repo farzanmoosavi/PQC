@@ -185,7 +185,7 @@ def build_net(model_kind: str, env, n_qubits: int = 6, n_layers: int = 3):
 
 
 def train(model_kind="quantum", node=5, capacity=5, episodes=200,
-          batch_size=32, gamma=0.99, tau=0.005, lr=5e-4,
+          batch_size=64, gamma=0.99, tau=0.005, lr=5e-4,
           eps_start=0.9, eps_end=0.05, eps_decay=600,
           fixed_instance=True, seed=0, out_prefix="qrl",
           n_qubits=6, n_layers=3):
