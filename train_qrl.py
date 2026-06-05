@@ -109,17 +109,19 @@ def optimize(net, target_net, memory, optimizer, batch_size, gamma):
     action_batch = torch.cat(batch.action).to(device)        # (B, 1)
     reward_batch = torch.stack(batch.reward).to(device)      # (B,)
 
-    non_final = torch.tensor([s is not None for s in batch.next_state],
-                             device=device, dtype=torch.bool)
+    # Single predicate keeps nf_states, nf_masks, and non_final in sync (Bug #7).
+    valid_idx = [i for i, (s, m) in enumerate(zip(batch.next_state, batch.next_mask))
+                 if s is not None and m is not None]
+    non_final = torch.zeros(batch_size, device=device, dtype=torch.bool)
+    if valid_idx:
+        non_final[valid_idx] = True
     q_values = net(state_batch).gather(1, action_batch).squeeze(1)   # (B,)
 
     next_values = torch.zeros(batch_size, device=device)
-    nf_states = [s for s in batch.next_state if s is not None]
+    nf_states = [batch.next_state[i] for i in valid_idx]
     if nf_states:
-        nf_batch = torch.cat(nf_states).to(device)                   # (Bnf, F)
-        nf_masks = torch.stack([m for s, m in
-                                zip(batch.next_state, batch.next_mask)
-                                if s is not None and m is not None]).to(device)  # (Bnf, A)
+        nf_batch = torch.cat(nf_states).to(device)
+        nf_masks = torch.stack([batch.next_mask[i] for i in valid_idx]).to(device)
         with torch.no_grad():
             # Double DQN: online net picks the action, target net evaluates it.
             online_q = net(nf_batch).masked_fill(~nf_masks, -float("inf"))
@@ -208,7 +210,7 @@ def train(model_kind="quantum", node=5, capacity=5, episodes=200,
     if hasattr(net, "param_report"):
         print(f"[{model_kind}] params: {net.param_report()}")
 
-    losses, dists, rewards, feas_rates = [], [], [], []
+    losses, dists, rewards, complete_rates = [], [], [], []
     steps_done = 0
 
     for ep in range(episodes):
@@ -216,7 +218,7 @@ def train(model_kind="quantum", node=5, capacity=5, episodes=200,
         # False draws a new instance each episode (learning a policy).
         state, _ = env.reset(regenerate=not fixed_instance)
         state = state.to(device)
-        total_r, n_steps, n_infeas = 0.0, 0, 0
+        total_r, n_steps = 0.0, 0
         last_loss = None
         done = False
         action = torch.tensor([[0]], device=device, dtype=torch.long)
@@ -227,7 +229,6 @@ def train(model_kind="quantum", node=5, capacity=5, episodes=200,
             steps_done += 1
             action = select_action(net, env, state, eps)
             nxt, reward, done, _, info = env.step(action.item())
-            n_infeas += int(info.get("infeasible", False))
             reward = reward.to(device)
 
             if done:
@@ -267,11 +268,11 @@ def train(model_kind="quantum", node=5, capacity=5, episodes=200,
             scheduler.step()  # only step after optimizer actually ran
         dists.append(env.total_distance)
         rewards.append(total_r)
-        feas_rates.append(1.0 - n_infeas / max(n_steps, 1))
+        complete_rates.append(1.0 if done else 0.0)
 
         if (ep + 1) % 10 == 0:
             print(f"Ep {ep+1:4d} | R={total_r:7.2f} | dist={env.total_distance:6.2f} "
-                  f"| feas={feas_rates[-1]:.2f} | eps={eps:.3f} "
+                  f"| complete={complete_rates[-1]:.2f} | eps={eps:.3f} "
                   f"| loss={last_loss if last_loss else float('nan'):.4f} "
                   f"| lr={scheduler.get_last_lr()[0]:.2e}")
 
@@ -279,11 +280,11 @@ def train(model_kind="quantum", node=5, capacity=5, episodes=200,
     np.savetxt(f"{tag}_rewards.txt", rewards)
     np.savetxt(f"{tag}_dists.txt", dists)
     np.savetxt(f"{tag}_losses.txt", losses)
-    np.savetxt(f"{tag}_feas.txt", feas_rates)
+    np.savetxt(f"{tag}_complete.txt", complete_rates)
     ckpt = f"{tag}.pt"
     torch.save(net.state_dict(), ckpt)
     print(f"Done. Saved {tag}_*.txt  checkpoint -> {ckpt}")
-    return dict(rewards=rewards, dists=dists, losses=losses, feas=feas_rates, net=net)
+    return dict(rewards=rewards, dists=dists, losses=losses, complete=complete_rates, net=net)
 
 
 if __name__ == "__main__":

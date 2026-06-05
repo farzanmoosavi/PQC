@@ -205,8 +205,11 @@ class CPDPTWEnv:
             dtype=torch.float32) / T
         demand_enc = torch.tensor(self.demands[1:], dtype=torch.float32) / Q
         visited_enc = self.visited[1:].float()                      # (2n,) binary
+        node_x = self.city_coords[:, 0]                             # (2n+1,)
+        node_y = self.city_coords[:, 1]                             # (2n+1,)
         state = torch.cat([load_enc, time_enc, pos_enc, pickup_remain,
-                           delivery_remain, demand_enc, visited_enc])
+                           delivery_remain, demand_enc, visited_enc,
+                           node_x, node_y])
         return state.unsqueeze(0)
 
     @property
@@ -215,5 +218,7 @@ class CPDPTWEnv:
 
     @property
     def n_observations(self) -> int:
-        return 4 + 6 * self.node  # 2 global + 2 position + 4n time/demand + 2n visited
+        # 4 global/position + n pickup_open + n delivery_close + 2n demand
+        # + 2n visited + (2n+1) node_x + (2n+1) node_y  =  6 + 10n
+        return 6 + 10 * self.node
 

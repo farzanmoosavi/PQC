@@ -70,7 +70,7 @@ def test_env_reset():
     env = CPDPTWEnv(node=3, vehicle_capacity=5, rng_seed=42)
     state, info = env.reset()
     assert state.shape == (1, env.n_observations), f"bad shape {state.shape}"
-    assert env.n_observations == 4 + 6 * 3, f"expected {4+18}, got {env.n_observations}"
+    assert env.n_observations == 6 + 10 * 3, f"expected {6+30}, got {env.n_observations}"
     return f"state ({state.shape[1]},)  n_actions={env.n_actions}"
 
 
@@ -206,7 +206,7 @@ def test_reinforce_runs(quick: bool = False):
     )
     assert len(r["rewards"]) > 0
     assert len(r["losses"]) > 0
-    assert all(f >= 0.0 for f in r["feas"])
+    assert all(f in (0.0, 1.0) for f in r["complete"])
     return f"episodes={len(r['rewards'])}  last_loss={r['losses'][-1]:.4f}"
 
 

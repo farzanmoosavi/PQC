@@ -32,27 +32,30 @@ import torch
 
 from cpdptw_env import CPDPTWEnv
 from train_qrl import build_net, train
+from route_validator import exact_solve
 
 
 # --------------------------------------------------------------------------- #
 # Greedy rollout on a given env/net pair
 # --------------------------------------------------------------------------- #
 
-def greedy_rollout(net, env, max_steps: Optional[int] = None) -> tuple[list[int], float, bool]:
+def greedy_rollout(net, env, max_steps: Optional[int] = None) -> tuple[list[int], float, float, bool]:
     """
     Roll out the greedy policy on env with the given net.
 
     Returns
     -------
-    route      : list of node indices visited (including depot at start/end)
-    total_dist : total travel distance (as reported by env.total_distance)
-    done       : True if all nodes were visited
+    route       : list of node indices visited (including depot at start/end)
+    total_reward: accumulated RL reward (includes time-window penalties)
+    total_dist  : total travel distance (as reported by env.total_distance)
+    done        : True if all nodes were visited
     """
     state, _ = env.reset(regenerate=False)
     device = next(net.parameters()).device
     state = state.to(device)
     done = False
     n_steps = 0
+    total_reward = 0.0
     limit = max_steps or 4 * env.n_total
 
     with torch.no_grad():
@@ -63,51 +66,12 @@ def greedy_rollout(net, env, max_steps: Optional[int] = None) -> tuple[list[int]
             q = net(state)
             q = q.masked_fill(~mask.unsqueeze(0), -float("inf"))
             action = int(q.max(1).indices.item())
-            state, _, done, _, _ = env.step(action)
+            state, reward, done, _, _ = env.step(action)
             state = state.to(device)
+            total_reward += reward.item()
             n_steps += 1
 
-    return list(env.route), env.total_distance, done
-
-
-# --------------------------------------------------------------------------- #
-# Exact DFS solver (upper bound on solution quality for n <= 5)
-# --------------------------------------------------------------------------- #
-
-def exact_solve(env) -> tuple[list[int], float]:
-    """
-    Depth-first exact solver with constraint pruning.
-    Returns (best_route, best_dist).  Works for n_node <= 5.
-    """
-    n = env.n_total
-    dist = env.dist_matrix.numpy()   # torch.Tensor -> numpy
-    demand = env.demands              # already numpy.ndarray
-    cap = env.capacity
-
-    best = [None, math.inf]
-
-    def dfs(cur, visited, load, dist_so_far, route):
-        if visited.count(True) == n:
-            ret = dist_so_far + dist[cur][0]
-            if ret < best[1]:
-                best[0] = route + [0]
-                best[1] = ret
-            return
-        for nxt in range(1, n + 1):
-            if visited[nxt - 1]:
-                continue
-            # Precedence: delivery (nxt > n_node) only after its pickup (nxt - n_node)
-            if nxt > env.node and not visited[nxt - env.node - 1]:
-                continue
-            new_load = load + demand[nxt]
-            if new_load > cap:
-                continue
-            visited[nxt - 1] = True
-            dfs(nxt, visited, new_load, dist_so_far + dist[cur][nxt], route + [nxt])
-            visited[nxt - 1] = False
-
-    dfs(0, [False] * n, 0.0, 0.0, [0])
-    return best[0] or [0], best[1]
+    return list(env.route), total_reward, env.total_distance, done
 
 
 # --------------------------------------------------------------------------- #
@@ -143,19 +107,20 @@ def evaluate_on_seeds(
         env.reset(regenerate=True)
 
         if exact and node <= 5:
-            _, opt_dist = exact_solve(env)
+            _, opt_reward, opt_dist = exact_solve(env)
             env.reset(regenerate=False)
         else:
+            opt_reward = None
             opt_dist = None
 
-        route, dist, done = greedy_rollout(net, env)
+        route, agent_reward, dist, done = greedy_rollout(net, env)
         n_done += int(done)
         dists.append(dist)
-        unvisited = int((~env.visited[1:]).sum().item()) if not done else 0
-        rewards_list.append(-dist - float(unvisited))
+        rewards_list.append(agent_reward)
 
-        if opt_dist is not None and 1e-9 < opt_dist < math.inf:
-            gaps.append((dist - opt_dist) / opt_dist * 100.0)
+        if opt_reward is not None and opt_reward > -math.inf:
+            # Gap: how far below optimal reward (positive = agent is worse)
+            gaps.append((opt_reward - agent_reward) / max(abs(opt_reward), 1e-9) * 100.0)
 
     feas = n_done / len(eval_seeds)
 
@@ -338,8 +303,9 @@ if __name__ == "__main__":
     eval_seeds = list(range(100, 100 + args.eval_seeds))
 
     if args.all_models:
+        # node-quantum/node-qaoa are REINFORCE-only; DQN comparison uses flat models.
         full_compare(
-            models=["quantum", "qaoa", "classical", "node-quantum"],
+            models=["quantum", "qaoa", "classical"],
             node=args.node, capacity=args.capacity,
             train_episodes=args.train_episodes,
             eval_seeds=eval_seeds,

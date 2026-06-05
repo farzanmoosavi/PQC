@@ -27,7 +27,7 @@ import os
 
 import numpy as np
 
-METRICS = ("rewards", "dists", "losses", "feas")
+METRICS = ("rewards", "dists", "losses", "complete")
 TAIL = 100   # episodes used for "final" statistics in the summary CSV
 
 
@@ -104,10 +104,10 @@ def aggregate(
     # Write summary CSV
     fieldnames = [
         "model", "n_seeds",
-        "rewards_final", "rewards_final_std",
-        "dists_final",   "dists_final_std",
-        "feas_final",    "feas_final_std",
-        "losses_final",  "losses_final_std",
+        "rewards_final",   "rewards_final_std",
+        "dists_final",     "dists_final_std",
+        "complete_final",  "complete_final_std",
+        "losses_final",    "losses_final_std",
     ]
     os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
     with open(out_csv, "w", newline="") as f:
@@ -115,13 +115,13 @@ def aggregate(
         w.writeheader()
         w.writerows(rows)
     print(f"\n  summary → {out_csv}")
-    print(f"  {'model':<16} {'reward':>10} {'±':>8}  {'dist':>8}  {'feas':>6}")
-    print(f"  {'-'*54}")
+    print(f"  {'model':<16} {'reward':>10} {'±':>8}  {'dist':>8}  {'complete':>8}")
+    print(f"  {'-'*56}")
     for r in rows:
         print(f"  {r['model']:<16} {r['rewards_final']:>10.2f} "
               f"{r['rewards_final_std']:>8.2f}  "
               f"{r['dists_final']:>8.2f}  "
-              f"{r['feas_final']:>6.3f}")
+              f"{r['complete_final']:>8.3f}")
 
 
 def main() -> None:

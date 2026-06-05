@@ -118,7 +118,7 @@ def run_one(
 
     rewards  = result["rewards"]
     dists    = result["dists"]
-    feas     = result["feas"]
+    complete = result["complete"]
     tail     = max(1, episodes // 5)   # last 20% of episodes
 
     return {
@@ -133,14 +133,14 @@ def run_one(
         "comp_params":  comp_params,
         "head_params":  head_params,
         # last-tail-episodes means (lower is better since reward = negative cost)
-        "final_reward_mean": sum(rewards[-tail:]) / tail,
-        "final_dist_mean":   sum(dists[-tail:])   / tail,
-        "final_feas_mean":   sum(feas[-tail:])    / tail,
-        "best_reward":       max(rewards),
-        "best_dist":         min(dists),
-        "wall_sec":          elapsed,
+        "final_reward_mean":   sum(rewards[-tail:]) / tail,
+        "final_dist_mean":     sum(dists[-tail:])   / tail,
+        "final_complete_mean": sum(complete[-tail:]) / tail,
+        "best_reward":         max(rewards),
+        "best_dist":           min(dists),
+        "wall_sec":            elapsed,
         # rough convergence: first episode where mean(last 10) crosses 50% of best
-        "converge_ep":       _convergence_episode(rewards),
+        "converge_ep":         _convergence_episode(rewards),
     }
 
 
@@ -226,14 +226,14 @@ def sweep(
 def _print_summary(rows: list[dict], nodes: list[int]) -> None:
     print("\n" + "=" * 72)
     print(f"{'model':10s} {'node':4s} {'n_q':4s} {'n_l':4s} "
-          f"{'params':7s} {'reward':9s} {'dist':8s} {'feas':6s} {'sec':6s}")
+          f"{'params':7s} {'reward':9s} {'dist':8s} {'complete':8s} {'sec':6s}")
     print("-" * 72)
     for r in rows:
         if "error" in r:
             continue
         print(f"{r['model']:10s} {r['node']:4d} {r['n_qubits']:4d} {r['n_layers']:4d} "
               f"{r['total_params']:7d} {r['final_reward_mean']:9.3f} "
-              f"{r['final_dist_mean']:8.3f} {r['final_feas_mean']:6.3f} "
+              f"{r['final_dist_mean']:8.3f} {r['final_complete_mean']:8.3f} "
               f"{r['wall_sec']:6.1f}")
     print("=" * 72)
 

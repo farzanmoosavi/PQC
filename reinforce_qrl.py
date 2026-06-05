@@ -140,7 +140,7 @@ def train_reinforce(
     if hasattr(net, "param_report"):
         print(f"[REINFORCE/{model_kind}] params: {net.param_report()}")
 
-    rewards_log, dists_log, feas_log, loss_log = [], [], [], []
+    rewards_log, dists_log, complete_log, loss_log = [], [], [], []
 
     for ep in range(episodes):
         state, _ = env.reset(regenerate=not fixed_instance)
@@ -151,7 +151,6 @@ def train_reinforce(
         ep_rewards: List[float] = []
         states_buf: List[torch.Tensor] = []   # for critic baseline
         n_steps = 0
-        n_infeas = 0
 
         for _ in range(4 * env.n_total):
             mask = env.action_mask().to(device)            # (n_actions,)
@@ -167,7 +166,6 @@ def train_reinforce(
             states_buf.append(state)                       # save for critic
 
             nxt, reward, done, _, info = env.step(action.item())
-            n_infeas += int(info.get("infeasible", False))
             ep_rewards.append(reward.item())
             n_steps += 1
 
@@ -193,7 +191,7 @@ def train_reinforce(
             # Episode produced no log-probs (all infeasible from step 1).
             rewards_log.append(sum(ep_rewards))
             dists_log.append(env.total_distance)
-            feas_log.append(0.0)
+            complete_log.append(0.0)
             continue
 
         L = len(log_probs)                         # steps with actions taken
@@ -229,26 +227,27 @@ def train_reinforce(
         scheduler.step()
 
         total_r = sum(ep_rewards)
+        completed = bool(env.visited[1:].all().item())
         rewards_log.append(total_r)
         dists_log.append(env.total_distance)
-        feas_log.append(1.0 - n_infeas / max(n_steps, 1))
+        complete_log.append(1.0 if completed else 0.0)
         loss_log.append(loss.item())
 
         if (ep + 1) % 10 == 0:
             print(f"Ep {ep+1:4d} | R={total_r:7.2f} | dist={env.total_distance:6.2f} "
-                  f"| feas={feas_log[-1]:.2f} | loss={loss.item():.4f} "
+                  f"| complete={complete_log[-1]:.2f} | loss={loss.item():.4f} "
                   f"| lr={scheduler.get_last_lr()[0]:.2e} | ent={cur_ent:.4f}")
 
     tag = f"{out_prefix}_{model_kind}_s{seed}"
     np.savetxt(f"{tag}_rewards.txt",  rewards_log)
     np.savetxt(f"{tag}_dists.txt",    dists_log)
     np.savetxt(f"{tag}_losses.txt",   loss_log if loss_log else [0.0])
-    np.savetxt(f"{tag}_feas.txt",     feas_log)
+    np.savetxt(f"{tag}_complete.txt", complete_log)
     ckpt = f"{tag}.pt"
     torch.save(net.state_dict(), ckpt)
     print(f"Done. Saved {tag}_*.txt  checkpoint -> {ckpt}")
     return dict(rewards=rewards_log, dists=dists_log, losses=loss_log,
-                feas=feas_log, net=net)
+                complete=complete_log, net=net)
 
 
 # --------------------------------------------------------------------------- #
@@ -292,14 +291,14 @@ def compare(
 
     print("\n" + "="*72)
     print(f"{'algo':10s} {'model':12s} {'final_reward':13s} {'best_reward':11s} "
-          f"{'feas':6s} {'converge_ep':11s}")
+          f"{'complete':8s} {'converge_ep':11s}")
     print("-"*72)
     for (algo, mk), r in results.items():
         fr = sum(r["rewards"][-tail:]) / tail
         br = max(r["rewards"])
-        ff = sum(r["feas"][-tail:])    / tail
+        fc = sum(r["complete"][-tail:]) / tail
         ce = _convergence_episode(r["rewards"])
-        print(f"{algo:10s} {mk:12s} {fr:13.3f} {br:11.3f} {ff:6.3f} {ce:11d}")
+        print(f"{algo:10s} {mk:12s} {fr:13.3f} {br:11.3f} {fc:8.3f} {ce:11d}")
     print("="*72)
 
 
