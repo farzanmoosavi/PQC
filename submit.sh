@@ -54,7 +54,18 @@
 module purge
 module load python/3.10 scipy-stack
 
-source ~/py310_env/bin/activate
+# Each cluster has its own virtualenv because C extensions (lightning.qubit)
+# and torch wheels are compiled differently per platform.
+#   py310_env  — rorqual (L40S), cu121 torch
+#   py310_nibi — nibi    (H100), cu121 torch
+#   py310_fir  — fir     (H100 NVL), CPU-only torch (quantum jobs only)
+case "${SLURM_CLUSTER_NAME:-unknown}" in
+    fir)  _VENV="$HOME/py310_fir"  ;;
+    nibi) _VENV="$HOME/py310_nibi" ;;
+    *)    _VENV="$HOME/py310_env"  ;;
+esac
+echo "[venv] $_VENV"
+source "$_VENV/bin/activate" || { echo "ERROR: virtualenv not found: $_VENV"; exit 1; }
 
 # Load CUDA only for GPU jobs — CPU-only jobs must NOT load a CUDA module
 # because the cu121 torch wheel segfaults against CUDA 13.x libraries.
