@@ -112,8 +112,8 @@ def train_reinforce(
     capacity: int = 5,
     episodes: int = 300,
     gamma: float = 0.99,
-    lr: float = 5e-4,
-    entropy_coef: float = 0.01,   # encourages exploration; replaces epsilon-greedy
+    lr: float = 2e-4,
+    entropy_coef: float = 0.01,   # starting value; decays to 10% by end of training
     value_coef: float = 0.5,      # critic loss weight; 0 disables actor-critic
     fixed_instance: bool = True,
     seed: int = 0,
@@ -130,6 +130,11 @@ def train_reinforce(
     critic = ValueHead(env.n_observations).to(device)
     optimizer = optim.AdamW(
         list(net.parameters()) + list(critic.parameters()), lr=lr, amsgrad=True
+    )
+    # Cosine decay: lr → lr/100 over all episodes so the policy stabilises
+    # instead of oscillating around good solutions it already found.
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=episodes, eta_min=lr * 0.01
     )
 
     if hasattr(net, "param_report"):
@@ -205,10 +210,14 @@ def train_reinforce(
         if L > 1:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
+        # Entropy decays linearly from entropy_coef → 10% of it by the final
+        # episode so the agent explores early and exploits late.
+        cur_ent = entropy_coef * max(0.1, 1.0 - ep / max(episodes - 1, 1))
+
         # Policy-gradient loss with advantage baseline.
         pg_loss      = -(log_prob_t * advantages).mean()
         value_loss   = 0.5 * torch.nn.functional.mse_loss(values, ret_L.detach())
-        entropy_loss = -entropy_coef * entropy_t.mean()
+        entropy_loss = -cur_ent * entropy_t.mean()
         loss         = pg_loss + value_coef * value_loss + entropy_loss
 
         optimizer.zero_grad()
@@ -217,6 +226,7 @@ def train_reinforce(
             list(net.parameters()) + list(critic.parameters()), 1.0
         )
         optimizer.step()
+        scheduler.step()
 
         total_r = sum(ep_rewards)
         rewards_log.append(total_r)
@@ -226,7 +236,8 @@ def train_reinforce(
 
         if (ep + 1) % 10 == 0:
             print(f"Ep {ep+1:4d} | R={total_r:7.2f} | dist={env.total_distance:6.2f} "
-                  f"| feas={feas_log[-1]:.2f} | loss={loss.item():.4f}")
+                  f"| feas={feas_log[-1]:.2f} | loss={loss.item():.4f} "
+                  f"| lr={scheduler.get_last_lr()[0]:.2e} | ent={cur_ent:.4f}")
 
     tag = f"{out_prefix}_{model_kind}_s{seed}"
     np.savetxt(f"{tag}_rewards.txt",  rewards_log)

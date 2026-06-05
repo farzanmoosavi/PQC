@@ -185,7 +185,7 @@ def build_net(model_kind: str, env, n_qubits: int = 6, n_layers: int = 3):
 
 
 def train(model_kind="quantum", node=5, capacity=5, episodes=200,
-          batch_size=16, gamma=0.99, tau=0.005, lr=1e-3,
+          batch_size=32, gamma=0.99, tau=0.005, lr=5e-4,
           eps_start=0.9, eps_end=0.05, eps_decay=600,
           fixed_instance=True, seed=0, out_prefix="qrl",
           n_qubits=6, n_layers=3):
@@ -200,6 +200,9 @@ def train(model_kind="quantum", node=5, capacity=5, episodes=200,
     target_net.eval()
 
     optimizer = optim.AdamW(net.parameters(), lr=lr, amsgrad=True)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=episodes, eta_min=lr * 0.01
+    )
     memory = PrioritizedReplayMemory(10000)
 
     if hasattr(net, "param_report"):
@@ -264,11 +267,13 @@ def train(model_kind="quantum", node=5, capacity=5, episodes=200,
         dists.append(env.total_distance)
         rewards.append(total_r)
         feas_rates.append(1.0 - n_infeas / max(n_steps, 1))
+        scheduler.step()
 
         if (ep + 1) % 10 == 0:
             print(f"Ep {ep+1:4d} | R={total_r:7.2f} | dist={env.total_distance:6.2f} "
                   f"| feas={feas_rates[-1]:.2f} | eps={eps:.3f} "
-                  f"| loss={last_loss if last_loss else float('nan'):.4f}")
+                  f"| loss={last_loss if last_loss else float('nan'):.4f} "
+                  f"| lr={scheduler.get_last_lr()[0]:.2e}")
 
     tag = f"{out_prefix}_{model_kind}_s{seed}"
     np.savetxt(f"{tag}_rewards.txt", rewards)
