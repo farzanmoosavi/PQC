@@ -36,12 +36,17 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=64G
-#SBATCH --gres=gpu:1
 #SBATCH --time=1-00:00
 #SBATCH --mail-user=farzanmoosavi368@gmail.com
 #SBATCH --mail-type=ALL
 #SBATCH --output=logs/qrl-%x-%j.out
 #SBATCH --error=logs/qrl-%x-%j.err
+# GPU note: quantum circuits run on CPU (lightning.qubit); only the classical
+# baseline uses GPU.  Request a GPU only when MODE=gpu (classical runs).
+# Default MODE=cpu runs quantum-only models in the CPU partition (shorter queue).
+# Usage:
+#   sbatch submit.sh                   # quantum models, CPU partition
+#   sbatch --export=MODE=gpu submit.sh # classical baseline, GPU partition
 
 # ============================================================
 # Environment setup
@@ -96,6 +101,11 @@ echo "============================================================"
 echo "  Job: $SLURM_JOB_ID   Rung: ${RUNG:-A}   Cluster: $_CLUSTER"
 echo "  Dir: $(pwd)"
 echo "  CPUs: $SLURM_CPUS_PER_TASK   Start: $(date)"
+if [ -n "$CUDA_VISIBLE_DEVICES" ] && [ "$CUDA_VISIBLE_DEVICES" != "NoDevFiles" ]; then
+    echo "  GPU: $CUDA_VISIBLE_DEVICES"
+else
+    echo "  GPU: none (CPU-only job)"
+fi
 echo "============================================================"
 
 # ============================================================
@@ -112,10 +122,21 @@ LR="${LR:-5e-4}"
 ENTROPY="${ENTROPY:-0.05}"
 FRESH="${FRESH:-0}"
 
-# Models for each rung (node models are REINFORCE-only due to DQN replay-buffer
-# coord issue when fixed_instance=False; safe with DQN+fixed_instance=True).
-DQN_MODELS="quantum qaoa classical"
-PG_MODELS="quantum qaoa node-quantum node-qaoa classical"
+# MODE=cpu (default): quantum-only, no GPU needed — shorter queue times.
+# MODE=gpu           : classical baseline only, full GPU utilisation.
+MODE="${MODE:-cpu}"
+
+if [ "$MODE" = "gpu" ]; then
+    # Request GPU at runtime via scontrol (only works before the job starts,
+    # so this is a reminder; for new submissions use --gres=gpu:1 explicitly).
+    echo "[mode] gpu — classical baseline only"
+    DQN_MODELS="classical"
+    PG_MODELS="classical"
+else
+    echo "[mode] cpu — quantum models only (lightning.qubit on CPU)"
+    DQN_MODELS="quantum qaoa"
+    PG_MODELS="quantum qaoa node-quantum node-qaoa"
+fi
 OUT_DIR="results/rung${RUNG}_$(date +%Y%m%d_%H%M)"
 mkdir -p "$OUT_DIR"
 
