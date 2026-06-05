@@ -264,10 +264,10 @@ def train(model_kind="quantum", node=5, capacity=5, episodes=200,
 
         if last_loss is not None:
             losses.append(last_loss)
+            scheduler.step()  # only step after optimizer actually ran
         dists.append(env.total_distance)
         rewards.append(total_r)
         feas_rates.append(1.0 - n_infeas / max(n_steps, 1))
-        scheduler.step()
 
         if (ep + 1) % 10 == 0:
             print(f"Ep {ep+1:4d} | R={total_r:7.2f} | dist={env.total_distance:6.2f} "
