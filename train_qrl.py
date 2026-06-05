@@ -270,13 +270,14 @@ def train(model_kind="quantum", node=5, capacity=5, episodes=200,
                   f"| feas={feas_rates[-1]:.2f} | eps={eps:.3f} "
                   f"| loss={last_loss if last_loss else float('nan'):.4f}")
 
-    np.savetxt(f"{out_prefix}_{model_kind}_rewards.txt", rewards)
-    np.savetxt(f"{out_prefix}_{model_kind}_dists.txt", dists)
-    np.savetxt(f"{out_prefix}_{model_kind}_losses.txt", losses)
-    np.savetxt(f"{out_prefix}_{model_kind}_feas.txt", feas_rates)
-    ckpt = f"{out_prefix}_{model_kind}.pt"
+    tag = f"{out_prefix}_{model_kind}_s{seed}"
+    np.savetxt(f"{tag}_rewards.txt", rewards)
+    np.savetxt(f"{tag}_dists.txt", dists)
+    np.savetxt(f"{tag}_losses.txt", losses)
+    np.savetxt(f"{tag}_feas.txt", feas_rates)
+    ckpt = f"{tag}.pt"
     torch.save(net.state_dict(), ckpt)
-    print(f"Done. Saved {out_prefix}_{model_kind}_*.txt  checkpoint -> {ckpt}")
+    print(f"Done. Saved {tag}_*.txt  checkpoint -> {ckpt}")
     return dict(rewards=rewards, dists=dists, losses=losses, feas=feas_rates, net=net)
 
 

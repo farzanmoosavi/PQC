@@ -228,13 +228,14 @@ def train_reinforce(
             print(f"Ep {ep+1:4d} | R={total_r:7.2f} | dist={env.total_distance:6.2f} "
                   f"| feas={feas_log[-1]:.2f} | loss={loss.item():.4f}")
 
-    np.savetxt(f"{out_prefix}_{model_kind}_rewards.txt",  rewards_log)
-    np.savetxt(f"{out_prefix}_{model_kind}_dists.txt",    dists_log)
-    np.savetxt(f"{out_prefix}_{model_kind}_losses.txt",   loss_log if loss_log else [0.0])
-    np.savetxt(f"{out_prefix}_{model_kind}_feas.txt",     feas_log)
-    ckpt = f"{out_prefix}_{model_kind}.pt"
+    tag = f"{out_prefix}_{model_kind}_s{seed}"
+    np.savetxt(f"{tag}_rewards.txt",  rewards_log)
+    np.savetxt(f"{tag}_dists.txt",    dists_log)
+    np.savetxt(f"{tag}_losses.txt",   loss_log if loss_log else [0.0])
+    np.savetxt(f"{tag}_feas.txt",     feas_log)
+    ckpt = f"{tag}.pt"
     torch.save(net.state_dict(), ckpt)
-    print(f"Done. Saved {out_prefix}_{model_kind}_*.txt  checkpoint -> {ckpt}")
+    print(f"Done. Saved {tag}_*.txt  checkpoint -> {ckpt}")
     return dict(rewards=rewards_log, dists=dists_log, losses=loss_log,
                 feas=feas_log, net=net)
 
