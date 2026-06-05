@@ -54,37 +54,14 @@
 module purge
 module load python/3.10 scipy-stack
 
-# Each cluster has its own virtualenv because C extensions (lightning.qubit)
-# and torch wheels are compiled differently per platform.
-#   py310_env  — rorqual (L40S), cu121 torch
-#   py310_nibi — nibi    (H100), cu121 torch
-#   py310_fir  — fir     (H100 NVL), CPU-only torch (quantum jobs only)
-case "${SLURM_CLUSTER_NAME:-unknown}" in
-    fir)  _VENV="$HOME/py310_fir"  ;;
-    nibi) _VENV="$HOME/py310_nibi" ;;
-    *)    _VENV="$HOME/py310_env"  ;;
-esac
-echo "[venv] $_VENV"
-source "$_VENV/bin/activate" || { echo "ERROR: virtualenv not found: $_VENV"; exit 1; }
-
-# Load CUDA only for GPU jobs — CPU-only jobs must NOT load a CUDA module
-# because the cu121 torch wheel segfaults against CUDA 13.x libraries.
-MODE_EARLY="${MODE:-cpu}"
-if [ "$MODE_EARLY" = "gpu" ]; then
-    _TORCH_CUDA=$(python3 -c "import torch; print(torch.version.cuda or '')" 2>/dev/null || echo "")
-    _CUDA_LOADED=0
-    for _CV in "$_TORCH_CUDA" 13.2 13.1 12.6 12.2; do
-        [ -z "$_CV" ] && continue
-        if module load cuda/$_CV 2>/dev/null; then
-            echo "[cuda] Loaded cuda/$_CV"
-            _CUDA_LOADED=1
-            break
-        fi
-    done
-    [ $_CUDA_LOADED -eq 0 ] && echo "WARNING: no CUDA module loaded — classical model will use CPU."
-else
-    echo "[cuda] Skipped (cpu mode — quantum circuits use lightning.qubit on CPU)"
-fi
+# Single virtualenv used across all clusters.
+# Contains CPU-only torch + pennylane (no pennylane-lightning — its C++
+# backend segfaults on fir; code falls back to default.qubit automatically).
+# Setup (one-time, on any login node):
+#   virtualenv ~/qrl_env && source ~/qrl_env/bin/activate
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install pennylane "numpy>=2.0"
+source "$HOME/qrl_env/bin/activate" || { echo "ERROR: ~/qrl_env not found. Run setup first."; exit 1; }
 
 # ============================================================
 # Locate project directory
