@@ -120,13 +120,15 @@ def train_reinforce(
     out_prefix: str = "reinforce",
     n_qubits: int = 6,
     n_layers: int = 3,
+    save_every: int = 100,
+    encoding: str = "ry",
 ) -> dict:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
 
     env = CPDPTWEnv(node=node, vehicle_capacity=capacity, rng_seed=seed)
-    net = build_net(model_kind, env, n_qubits, n_layers).to(device)
+    net = build_net(model_kind, env, n_qubits, n_layers, encoding).to(device)
     critic = ValueHead(env.n_observations).to(device)
     optimizer = optim.AdamW(
         list(net.parameters()) + list(critic.parameters()), lr=lr, amsgrad=True
@@ -233,6 +235,10 @@ def train_reinforce(
         complete_log.append(1.0 if completed else 0.0)
         loss_log.append(loss.item())
 
+        if save_every > 0 and (ep + 1) % save_every == 0 and (ep + 1) < episodes:
+            torch.save(net.state_dict(),
+                       f"{out_prefix}_{model_kind}_s{seed}_ep{ep+1}.pt")
+
         if (ep + 1) % 10 == 0:
             print(f"Ep {ep+1:4d} | R={total_r:7.2f} | dist={env.total_distance:6.2f} "
                   f"| complete={complete_log[-1]:.2f} | loss={loss.item():.4f} "
@@ -329,6 +335,10 @@ if __name__ == "__main__":
                    help="Train on one fixed problem instance.")
     p.add_argument("--out-prefix", default="reinforce",
                    help="Path prefix for output .txt and .pt files.")
+    p.add_argument("--save-every", type=int, default=100,
+                   help="Save a checkpoint every N episodes (0 = disable).")
+    p.add_argument("--encoding", choices=["ry", "rz", "ryrz"], default="ry",
+                   help="Qubit encoding strategy (default: ry).")
     args = p.parse_args()
 
     if args.compare:
@@ -350,4 +360,6 @@ if __name__ == "__main__":
             out_prefix=args.out_prefix,
             n_qubits=args.n_qubits,
             n_layers=args.n_layers,
+            save_every=args.save_every,
+            encoding=args.encoding,
         )

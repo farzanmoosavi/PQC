@@ -15,6 +15,7 @@
 #   sbatch --export=RUNG=B submit.sh              # Rung B: REINFORCE fixed-instance
 #   sbatch --export=RUNG=C submit.sh              # Rung C: REINFORCE policy-learning
 #   sbatch --export=RUNG=D submit.sh              # Rung D: hyperparameter sweep
+#   sbatch --export=RUNG=E submit.sh              # Rung E: scaling n=3,5,7 + gap analysis
 #   sbatch --export=RUNG=T submit.sh              # Rung T: smoke-test only
 #   sbatch --export=RUNG=A,EPISODES=500 submit.sh
 #   sbatch --export=RUNG=B,SEEDS="0 1 2 3 4" submit.sh
@@ -82,10 +83,11 @@ NODE="${NODE:-5}"
 CAPACITY="${CAPACITY:-5}"
 EPISODES="${EPISODES:-1000}"
 SEEDS="${SEEDS:-0 1 2 3 4 5 6}"
-N_QUBITS="${N_QUBITS:-11}"
+N_QUBITS="${N_QUBITS:-9}"     # capped at 9 (≤10 qubits) to stay within 1-day wall time
 N_LAYERS="${N_LAYERS:-4}"
 LR="${LR:-5e-4}"
 ENTROPY="${ENTROPY:-0.05}"
+ENCODING="${ENCODING:-ry}"    # qubit encoding: ry | rz | ryrz
 FRESH="${FRESH:-0}"
 
 DQN_MODELS="quantum qaoa classical"
@@ -156,7 +158,8 @@ if [ "$RUNG" = "A" ]; then
             run_bg "${MODEL}_s${SEED}" train_qrl.py \
                 --model "$MODEL" --node "$NODE" --capacity "$CAPACITY" \
                 --episodes "$EPISODES" --n-qubits "$N_QUBITS" --n-layers "$N_LAYERS" \
-                --seed "$SEED" --fixed-instance --out-prefix "$OUT_DIR/dqn"
+                --seed "$SEED" --fixed-instance --encoding "$ENCODING" \
+                --out-prefix "$OUT_DIR/dqn"
         done
     done
 
@@ -177,7 +180,7 @@ if [ "$RUNG" = "B" ]; then
             run_bg "${MODEL}_s${SEED}" reinforce_qrl.py \
                 --model "$MODEL" --node "$NODE" --capacity "$CAPACITY" \
                 --episodes "$EPISODES" --n-qubits "$N_QUBITS" --n-layers "$N_LAYERS" \
-                --lr "$LR" --entropy "$ENTROPY" \
+                --lr "$LR" --entropy "$ENTROPY" --encoding "$ENCODING" \
                 --seed "$SEED" --fixed-instance --out-prefix "$OUT_DIR/pg"
         done
     done
@@ -198,7 +201,7 @@ if [ "$RUNG" = "C" ]; then
             run_bg "${MODEL}_s${SEED}" reinforce_qrl.py \
                 --model "$MODEL" --node "$NODE" --capacity "$CAPACITY" \
                 --episodes "$EPISODES" --n-qubits "$N_QUBITS" --n-layers "$N_LAYERS" \
-                --lr "$LR" --entropy "$ENTROPY" \
+                --lr "$LR" --entropy "$ENTROPY" --encoding "$ENCODING" \
                 --seed "$SEED" --out-prefix "$OUT_DIR/policy"
         done
     done
@@ -229,6 +232,96 @@ if [ "$RUNG" = "D" ]; then
         --out "$OUT_DIR/sweep.csv" \
         2>&1 | tee "$OUT_DIR/sweep.log"
     echo "=== Rung D done: $(date) ==="
+fi
+
+# ============================================================
+# Rung E — Scaling + optimality gap (n=3, n=4)
+#
+# All node models use ≤9 qubits (2n+1: n=3→7q, n=4→9q) so the
+# full job stays well within the 1-day wall limit.
+#
+# Three sub-experiments per node size:
+#   fixed/ry    : fixed-instance REINFORCE with RY encoding
+#   fixed/ryrz  : fixed-instance REINFORCE with RY+RZ encoding
+#   policy/ry   : policy-learning (new instance each ep) with RY
+#
+# After training, gap_analysis.py produces the combined comparison
+# table: model × encoding × mode → (gap%, total_params, pqc_params).
+#
+# Episode budgets (per seed) fit within ~20h on 32 CPUs:
+#   n=3 (7q):  500 eps per sub-experiment
+#   n=4 (9q):  300 eps per sub-experiment
+# ============================================================
+if [ "$RUNG" = "E" ]; then
+    echo "=== Rung E: scaling + gap analysis (n=3, n=4) ==="
+
+    declare -A E_EPS=( [3]=500 [4]=300 )
+
+    for N_SIZE in 3 4; do
+        NQ=$(( 2 * N_SIZE + 1 ))
+        EPS_N=${E_EPS[$N_SIZE]}
+        echo "--- n=$N_SIZE  qubits=$NQ  episodes=$EPS_N ---"
+
+        for ENC in ry ryrz; do
+            # Fixed-instance: train on one problem, tests route memorisation
+            for MODEL in $PG_MODELS; do
+                for SEED in $SEEDS; do
+                    run_bg "e_n${N_SIZE}_${ENC}_fixed_${MODEL}_s${SEED}" reinforce_qrl.py \
+                        --model "$MODEL" --node "$N_SIZE" --capacity "$CAPACITY" \
+                        --episodes "$EPS_N" \
+                        --n-qubits "$NQ" --n-layers "$N_LAYERS" \
+                        --lr "$LR" --entropy "$ENTROPY" --encoding "$ENC" \
+                        --seed "$SEED" --fixed-instance \
+                        --out-prefix "$OUT_DIR/e_n${N_SIZE}_${ENC}_fixed"
+                done
+            done
+        done
+
+        # Policy learning: new instance each episode, tests generalisation
+        for MODEL in $PG_MODELS; do
+            for SEED in $SEEDS; do
+                run_bg "e_n${N_SIZE}_ry_policy_${MODEL}_s${SEED}" reinforce_qrl.py \
+                    --model "$MODEL" --node "$N_SIZE" --capacity "$CAPACITY" \
+                    --episodes "$EPS_N" \
+                    --n-qubits "$NQ" --n-layers "$N_LAYERS" \
+                    --lr "$LR" --entropy "$ENTROPY" --encoding "ry" \
+                    --seed "$SEED" \
+                    --out-prefix "$OUT_DIR/e_n${N_SIZE}_ry_policy"
+            done
+        done
+    done
+
+    wait_all
+
+    # Aggregate + gap analysis for every sub-experiment
+    for N_SIZE in 3 4; do
+        NQ=$(( 2 * N_SIZE + 1 ))
+        for ENC in ry ryrz; do
+            aggregate "$OUT_DIR/e_n${N_SIZE}_${ENC}_fixed" "$PG_MODELS"
+            python3 -u gap_analysis.py \
+                --prefix   "$OUT_DIR/e_n${N_SIZE}_${ENC}_fixed" \
+                --models   $PG_MODELS \
+                --seeds    $SEEDS \
+                --node     "$N_SIZE" --n-qubits "$NQ" --n-layers "$N_LAYERS" \
+                --encoding "$ENC" --mode fixed \
+                --out-csv  "$OUT_DIR/gap_n${N_SIZE}_${ENC}_fixed.csv" \
+                >> "$OUT_DIR/gap_n${N_SIZE}.log" 2>&1
+        done
+
+        aggregate "$OUT_DIR/e_n${N_SIZE}_ry_policy" "$PG_MODELS"
+        python3 -u gap_analysis.py \
+            --prefix   "$OUT_DIR/e_n${N_SIZE}_ry_policy" \
+            --models   $PG_MODELS \
+            --seeds    $SEEDS \
+            --node     "$N_SIZE" --n-qubits "$NQ" --n-layers "$N_LAYERS" \
+            --encoding "ry" --mode policy \
+            --out-csv  "$OUT_DIR/gap_n${N_SIZE}_ry_policy.csv" \
+            >> "$OUT_DIR/gap_n${N_SIZE}.log" 2>&1
+
+        echo "Gap CSVs for n=$N_SIZE -> $OUT_DIR/gap_n${N_SIZE}_*.csv"
+    done
+
+    echo "=== Rung E done: $(date) ==="
 fi
 
 # ============================================================

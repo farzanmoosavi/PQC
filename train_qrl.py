@@ -148,26 +148,27 @@ def optimize(net, target_net, memory, optimizer, batch_size, gamma):
 # Training driver
 # --------------------------------------------------------------------------- #
 
-def build_net(model_kind: str, env, n_qubits: int = 6, n_layers: int = 3):
+def build_net(model_kind: str, env, n_qubits: int = 6, n_layers: int = 3,
+              encoding: str = "ry"):
     if model_kind == "quantum":
         from quantum_qnet import QuantumQNetwork
-        return QuantumQNetwork(env, n_qubits=n_qubits, n_layers=n_layers)
+        return QuantumQNetwork(env, n_qubits=n_qubits, n_layers=n_layers,
+                               encoding=encoding)
     elif model_kind == "qaoa":
         from quantum_qnet import QAOAQNetwork
-        return QAOAQNetwork(env, n_qubits=n_qubits, n_layers=n_layers)
+        return QAOAQNetwork(env, n_qubits=n_qubits, n_layers=n_layers,
+                            encoding=encoding)
     elif model_kind == "node-quantum":
-        # Per-node encoding: n_qubits = 2*node+1 auto, n_qubits arg ignored.
         from quantum_qnet import QuantumNodeQNetwork
-        return QuantumNodeQNetwork(env, n_layers=n_layers)
+        return QuantumNodeQNetwork(env, n_layers=n_layers, encoding=encoding)
     elif model_kind == "node-qaoa":
-        # Per-node encoding + QAOA: strongest form of Hamiltonian approx claim.
         from quantum_qnet import QAOANodeQNetwork
-        return QAOANodeQNetwork(env, n_layers=n_layers)
+        return QAOANodeQNetwork(env, n_layers=n_layers, encoding=encoding)
     elif model_kind == "classical":
         from quantum_qnet import QuantumQNetwork, ClassicalQNetwork, match_classical_width
-        # Match params to HEA quantum at the same qubit/layer config.
         try:
-            ref = QuantumQNetwork(env, n_qubits=n_qubits, n_layers=n_layers)
+            ref = QuantumQNetwork(env, n_qubits=n_qubits, n_layers=n_layers,
+                                  encoding=encoding)
             target = ref.param_report()["total"]
             w = match_classical_width(env, target)
         except Exception:
@@ -175,9 +176,9 @@ def build_net(model_kind: str, env, n_qubits: int = 6, n_layers: int = 3):
         return ClassicalQNetwork(env, hidden=w)
     elif model_kind == "classical-qaoa":
         from quantum_qnet import QAOAQNetwork, ClassicalQNetwork, match_classical_width
-        # Match params to QAOA (fewer PQC params than HEA).
         try:
-            ref = QAOAQNetwork(env, n_qubits=n_qubits, n_layers=n_layers)
+            ref = QAOAQNetwork(env, n_qubits=n_qubits, n_layers=n_layers,
+                               encoding=encoding)
             target = ref.param_report()["total"]
             w = match_classical_width(env, target)
         except Exception:
@@ -190,14 +191,14 @@ def train(model_kind="quantum", node=5, capacity=5, episodes=200,
           batch_size=64, gamma=0.99, tau=0.005, lr=5e-4,
           eps_start=0.9, eps_end=0.05, eps_decay=600,
           fixed_instance=True, seed=0, out_prefix="qrl",
-          n_qubits=6, n_layers=3):
+          n_qubits=6, n_layers=3, save_every=100, encoding="ry"):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
 
     env = CPDPTWEnv(node=node, vehicle_capacity=capacity, rng_seed=seed)
-    net = build_net(model_kind, env, n_qubits, n_layers).to(device)
-    target_net = build_net(model_kind, env, n_qubits, n_layers).to(device)
+    net = build_net(model_kind, env, n_qubits, n_layers, encoding).to(device)
+    target_net = build_net(model_kind, env, n_qubits, n_layers, encoding).to(device)
     target_net.load_state_dict(net.state_dict())
     target_net.eval()
 
@@ -270,6 +271,10 @@ def train(model_kind="quantum", node=5, capacity=5, episodes=200,
         rewards.append(total_r)
         complete_rates.append(1.0 if done else 0.0)
 
+        if save_every > 0 and (ep + 1) % save_every == 0 and (ep + 1) < episodes:
+            torch.save(net.state_dict(),
+                       f"{out_prefix}_{model_kind}_s{seed}_ep{ep+1}.pt")
+
         if (ep + 1) % 10 == 0:
             print(f"Ep {ep+1:4d} | R={total_r:7.2f} | dist={env.total_distance:6.2f} "
                   f"| complete={complete_rates[-1]:.2f} | eps={eps:.3f} "
@@ -304,9 +309,14 @@ if __name__ == "__main__":
                    help="Train on one fixed problem instance (route learning).")
     p.add_argument("--out-prefix", default="qrl",
                    help="Path prefix for output .txt and .pt files.")
+    p.add_argument("--save-every", type=int, default=100,
+                   help="Save a checkpoint every N episodes (0 = disable).")
+    p.add_argument("--encoding", choices=["ry", "rz", "ryrz"], default="ry",
+                   help="Qubit encoding strategy (default: ry).")
     args = p.parse_args()
     train(model_kind=args.model, node=args.node, capacity=args.capacity,
           episodes=args.episodes, seed=args.seed,
           fixed_instance=args.fixed_instance,
           out_prefix=args.out_prefix,
-          n_qubits=args.n_qubits, n_layers=args.n_layers)
+          n_qubits=args.n_qubits, n_layers=args.n_layers,
+          save_every=args.save_every, encoding=args.encoding)

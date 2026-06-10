@@ -182,10 +182,11 @@ class QuantumQNetwork(nn.Module):
 
         # ryrz encoding uses two rotation angles per qubit per layer.
         self.n_angles = 2 * self.n_qubits if encoding == "ryrz" else self.n_qubits
-        # No Tanh: Tanh saturates for large inputs and kills gradients through the
-        # compressor.  LayerNorm keeps activations bounded without blocking gradients.
+        # GELU adds nonlinearity so the compressor can model feature interactions
+        # before encoding into qubit angles.  LayerNorm keeps activations bounded.
         self.compressor = nn.Sequential(
             nn.Linear(self.n_obs, self.n_angles),
+            nn.GELU(),
             nn.LayerNorm(self.n_angles),
         )
 
@@ -337,6 +338,7 @@ class QAOAQNetwork(nn.Module):
         self.n_angles = 2 * self.n_qubits if encoding == "ryrz" else self.n_qubits
         self.compressor = nn.Sequential(
             nn.Linear(self.n_obs, self.n_angles),
+            nn.GELU(),
             nn.LayerNorm(self.n_angles),
         )
 
@@ -547,8 +549,11 @@ class QuantumNodeQNetwork(nn.Module):
         self.n_out      = 2 if encoding == "ryrz" else 1
         self.n_angles   = self.n_qubits * self.n_out
         # 11 features per node: 3 local + 4 global vehicle state + 2 node coords + 2 partner coords.
+        # Hidden layer allows nonlinear feature interactions before angle compression.
         self.node_encoder = nn.Sequential(
-            nn.Linear(11, self.n_out),
+            nn.Linear(11, 8),
+            nn.GELU(),
+            nn.Linear(8, self.n_out),
             nn.Tanh(),
         )
 
@@ -681,7 +686,9 @@ class QAOANodeQNetwork(nn.Module):
         self.n_out     = 2 if encoding == "ryrz" else 1
         self.n_angles  = self.n_qubits * self.n_out
         self.node_encoder = nn.Sequential(
-            nn.Linear(11, self.n_out),
+            nn.Linear(11, 8),
+            nn.GELU(),
+            nn.Linear(8, self.n_out),
             nn.Tanh(),
         )
 
