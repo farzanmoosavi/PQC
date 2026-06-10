@@ -122,13 +122,14 @@ def train_reinforce(
     n_layers: int = 3,
     save_every: int = 100,
     encoding: str = "ry",
+    entanglement: str = "ring",
 ) -> dict:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
 
     env = CPDPTWEnv(node=node, vehicle_capacity=capacity, rng_seed=seed)
-    net = build_net(model_kind, env, n_qubits, n_layers, encoding).to(device)
+    net = build_net(model_kind, env, n_qubits, n_layers, encoding, entanglement).to(device)
     critic = ValueHead(env.n_observations).to(device)
     optimizer = optim.AdamW(
         list(net.parameters()) + list(critic.parameters()), lr=lr, amsgrad=True
@@ -339,6 +340,8 @@ if __name__ == "__main__":
                    help="Save a checkpoint every N episodes (0 = disable).")
     p.add_argument("--encoding", choices=["ry", "rz", "ryrz"], default="ry",
                    help="Qubit encoding strategy (default: ry).")
+    p.add_argument("--entanglement", choices=["ring", "brick", "all", "star"],
+                   default="ring", help="Entanglement topology (default: ring).")
     args = p.parse_args()
 
     if args.compare:
@@ -362,4 +365,5 @@ if __name__ == "__main__":
             n_layers=args.n_layers,
             save_every=args.save_every,
             encoding=args.encoding,
+            entanglement=args.entanglement,
         )

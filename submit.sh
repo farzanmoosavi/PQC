@@ -15,7 +15,10 @@
 #   sbatch --export=RUNG=B submit.sh              # Rung B: REINFORCE fixed-instance
 #   sbatch --export=RUNG=C submit.sh              # Rung C: REINFORCE policy-learning
 #   sbatch --export=RUNG=D submit.sh              # Rung D: hyperparameter sweep
-#   sbatch --export=RUNG=E submit.sh              # Rung E: scaling n=3,5,7 + gap analysis
+#   sbatch --export=RUNG=E submit.sh              # Rung E: scaling n=3,4 + gap analysis
+#   sbatch --export=RUNG=F submit.sh              # Rung F: barren plateau gradient-variance
+#   sbatch --export=RUNG=G submit.sh              # Rung G: topology × depth sensitivity
+#   sbatch --export=RUNG=H submit.sh              # Rung H: critic ablation (REINFORCE vs AC)
 #   sbatch --export=RUNG=T submit.sh              # Rung T: smoke-test only
 #   sbatch --export=RUNG=A,EPISODES=500 submit.sh
 #   sbatch --export=RUNG=B,SEEDS="0 1 2 3 4" submit.sh
@@ -322,6 +325,85 @@ if [ "$RUNG" = "E" ]; then
     done
 
     echo "=== Rung E done: $(date) ==="
+fi
+
+# ============================================================
+# Rung F — Barren plateau gradient-variance analysis
+#
+# Scans: qubit width, layer depth, entanglement topology, encoding,
+# and initialisation strategy.  All five scans use n=3 (7q) so the
+# 2^7 statevector fits in memory with fast backprop.
+#
+# Runtime: ~30-60 min on 32 CPUs with 50 random initialisations.
+# ============================================================
+if [ "$RUNG" = "F" ]; then
+    echo "=== Rung F: barren plateau gradient-variance analysis ==="
+    python3 -u barren_plateau.py \
+        --scan qubits layers topology encoding hinit \
+        --trials 50 --node 3 \
+        --out "$OUT_DIR/barren_plateau.csv" \
+        2>&1 | tee "$OUT_DIR/barren_plateau.log"
+    echo "=== Rung F done: $(date) ==="
+fi
+
+# ============================================================
+# Rung G — Circuit sensitivity: topology × layer-depth sweep
+#
+# Sweeps ring / brick / star entanglement at n=3 and n=4, layers=1-4,
+# seeds=0-2, for quantum and qaoa models only (classical is topology-free).
+# Produces topo_sweep.csv for Rung G figure: converge_ep vs n_layers,
+# coloured by topology, showing which topology reaches lowest gap fastest.
+#
+# Runtime: ~8h on 32 CPUs (3 topologies × 3 qubit sizes × 4 layers ×
+#          3 seeds × 2 models × n=[3,4]).
+# ============================================================
+if [ "$RUNG" = "G" ]; then
+    echo "=== Rung G: topology × layer-depth sensitivity ==="
+    python3 -u sweep_experiment.py \
+        --node 3 4 \
+        --layers 1 2 3 4 \
+        --topologies ring brick star \
+        --models quantum qaoa \
+        --seeds 0 1 2 \
+        --episodes 200 \
+        --out "$OUT_DIR/topo_sweep.csv" \
+        2>&1 | tee "$OUT_DIR/topo_sweep.log"
+    echo "=== Rung G done: $(date) ==="
+fi
+
+# ============================================================
+# Rung H — Critic ablation: pure REINFORCE vs actor-critic
+#
+# Compares value_coef=0 (no baseline) vs value_coef=0.5 (actor-critic)
+# for all five PG models at n=4 (9 qubits).  500 episodes per run.
+# Shows whether the critic baseline is essential for quantum PG stability.
+#
+# Runtime: ~10h on 32 CPUs (5 models × 7 seeds × 2 conditions × 500 eps).
+# ============================================================
+if [ "$RUNG" = "H" ]; then
+    echo "=== Rung H: critic ablation (pure REINFORCE vs actor-critic) ==="
+    H_MODELS="quantum qaoa node-quantum node-qaoa classical"
+
+    for CONDITION in nocritic critic; do
+        VC="0.0"
+        [ "$CONDITION" = "critic" ] && VC="0.5"
+        for MODEL in $H_MODELS; do
+            for SEED in $SEEDS; do
+                run_bg "h_${CONDITION}_${MODEL}_s${SEED}" reinforce_qrl.py \
+                    --model "$MODEL" --node 4 --capacity "$CAPACITY" \
+                    --episodes 500 --n-qubits 9 --n-layers "$N_LAYERS" \
+                    --lr "$LR" --entropy "$ENTROPY" --encoding ry \
+                    --value-coef "$VC" \
+                    --seed "$SEED" --fixed-instance \
+                    --out-prefix "$OUT_DIR/h_${CONDITION}"
+            done
+        done
+    done
+
+    wait_all
+    aggregate "$OUT_DIR/h_nocritic" "$H_MODELS"
+    aggregate "$OUT_DIR/h_critic"   "$H_MODELS"
+    echo "=== Rung H done: $(date) ==="
 fi
 
 # ============================================================

@@ -37,10 +37,11 @@ from typing import Any
 
 # n_request values to sweep.  Keep ≤ 5 for simulation feasibility:
 # the "natural" qubit count 2n+1 means a 2^(2n+1) statevector simulation.
-DEFAULT_NODES    = [3, 5]
+DEFAULT_NODES    = [3, 4]          # 2n+1 qubits: n=3→7q, n=4→9q — both ≤10 qubit cap
 DEFAULT_LAYERS   = [1, 2, 3, 4]
 DEFAULT_SEEDS    = [0, 1, 2]
 DEFAULT_EPISODES = 150
+DEFAULT_TOPOLOGIES = ["ring"]      # add "brick" "star" for topology sensitivity (Rung G)
 # Models compared.  "classical" and "classical-qaoa" are parameter-matched
 # to "quantum" and "qaoa" respectively via match_classical_width().
 DEFAULT_MODELS   = ["quantum", "qaoa", "classical", "classical-qaoa",
@@ -77,17 +78,15 @@ def run_one(
     seed: int,
     episodes: int,
     capacity: int = 5,
+    entanglement: str = "ring",
 ) -> dict[str, Any]:
     """
-    Train one (model, qubit_count, layers, seed) configuration and return a
-    flat dict of metrics for the results CSV.
-
-    For the classical baseline, n_qubits and n_layers are ignored; the MLP
-    width is chosen to match the quantum param count for that (n_qubits, n_layers).
+    Train one (model, qubit_count, layers, seed, entanglement) configuration.
+    Returns a flat dict of metrics for the results CSV.
     """
     from train_qrl import train
 
-    out_prefix = f"sweep_n{node}_q{n_qubits}_l{n_layers}_s{seed}"
+    out_prefix = f"sweep_n{node}_q{n_qubits}_l{n_layers}_{entanglement}_s{seed}"
     t0 = time.perf_counter()
 
     quantum_models = ("quantum", "qaoa", "node-quantum", "node-qaoa")
@@ -101,6 +100,7 @@ def run_one(
         out_prefix=out_prefix,
         n_qubits=n_qubits,
         n_layers=n_layers,
+        entanglement=entanglement,
     )
     net = result["net"]
     params = net.param_report()
@@ -126,6 +126,7 @@ def run_one(
         "node":         node,
         "n_qubits":     n_qubits,
         "n_layers":     n_layers,
+        "entanglement": entanglement,
         "seed":         seed,
         "episodes":     episodes,
         "total_params": total_params,
@@ -166,46 +167,51 @@ def _convergence_episode(rewards: list[float], window: int = 10) -> int:
 # --------------------------------------------------------------------------- #
 
 def sweep(
-    nodes:    list[int] = DEFAULT_NODES,
-    layers:   list[int] = DEFAULT_LAYERS,
-    seeds:    list[int] = DEFAULT_SEEDS,
-    episodes: int       = DEFAULT_EPISODES,
-    models:   list[str] = DEFAULT_MODELS,
-    out_csv:  str       = "sweep_results.csv",
+    nodes:      list[int] = DEFAULT_NODES,
+    layers:     list[int] = DEFAULT_LAYERS,
+    seeds:      list[int] = DEFAULT_SEEDS,
+    episodes:   int       = DEFAULT_EPISODES,
+    models:     list[str] = DEFAULT_MODELS,
+    topologies: list[str] = DEFAULT_TOPOLOGIES,
+    out_csv:    str       = "sweep_results.csv",
 ) -> list[dict]:
     rows: list[dict] = []
     configs = [
-        (model, node, nq, nl, s)
+        (model, node, nq, nl, s, topo)
         for node  in nodes
         for nq    in qubit_sizes(node)
         for nl    in layers
         for s     in seeds
         for model in models
+        for topo  in topologies
     ]
     total = len(configs)
     print(f"Sweep: {total} runs  ({len(nodes)} nodes x "
           f"{len([nq for node in nodes for nq in qubit_sizes(node)])} qubit configs x "
-          f"{len(layers)} layer depths x {len(seeds)} seeds x {len(models)} models)")
+          f"{len(layers)} layer depths x {len(seeds)} seeds x "
+          f"{len(models)} models x {len(topologies)} topologies)")
     print(f"Qubit counts by node: { {n: qubit_sizes(n) for n in nodes} }")
     print(f"Natural encoding: 2n+1 qubits  "
           f"({', '.join(f'n={n}->{natural_qubits(n)}q' for n in nodes)})")
+    print(f"Topologies: {topologies}")
     print()
 
     _node_models = {"node-quantum", "node-qaoa"}
 
     fieldnames: list[str] = []
-    for i, (model, node, nq, nl, seed) in enumerate(configs, 1):
+    for i, (model, node, nq, nl, seed, topo) in enumerate(configs, 1):
         # Node models fix n_qubits = 2*node+1; skip redundant qubit-size configs.
         if model in _node_models and nq != natural_qubits(node):
-            print(f"[{i:3d}/{total}]  {model:9s}  n={node}  q={nq}  l={nl}  seed={seed}  (skip — node model uses q={natural_qubits(node)})")
+            print(f"[{i:3d}/{total}]  {model:9s}  n={node}  q={nq}  l={nl}  seed={seed}  topo={topo}  (skip — node model uses q={natural_qubits(node)})")
             continue
-        print(f"[{i:3d}/{total}]  {model:9s}  n={node}  q={nq}  l={nl}  seed={seed}")
+        print(f"[{i:3d}/{total}]  {model:9s}  n={node}  q={nq}  l={nl}  seed={seed}  topo={topo}")
         try:
-            row = run_one(model, node, nq, nl, seed, episodes)
+            row = run_one(model, node, nq, nl, seed, episodes, entanglement=topo)
         except Exception as exc:
             print(f"  ERROR: {exc}")
             row = {"model": model, "node": node, "n_qubits": nq,
-                   "n_layers": nl, "seed": seed, "error": str(exc)}
+                   "n_layers": nl, "seed": seed, "entanglement": topo,
+                   "error": str(exc)}
         rows.append(row)
 
         if not fieldnames and "error" not in row:
@@ -258,6 +264,9 @@ if __name__ == "__main__":
                     help="Training episodes per run (default: 150)")
     ap.add_argument("--out",      default="sweep_results.csv",
                     help="Output CSV path")
+    ap.add_argument("--topologies", type=str, nargs="+", default=DEFAULT_TOPOLOGIES,
+                    choices=["ring", "brick", "all", "star"],
+                    help="Entanglement topologies to sweep (default: ring)")
     ap.add_argument("--quick",    action="store_true",
                     help="1 seed, 80 episodes — for a fast sanity check")
     args = ap.parse_args()
@@ -267,10 +276,11 @@ if __name__ == "__main__":
         args.episodes = 80
 
     sweep(
-        nodes    = args.node,
-        layers   = args.layers,
-        seeds    = args.seeds,
-        episodes = args.episodes,
-        models   = args.models,
-        out_csv  = args.out,
+        nodes      = args.node,
+        layers     = args.layers,
+        seeds      = args.seeds,
+        episodes   = args.episodes,
+        models     = args.models,
+        topologies = args.topologies,
+        out_csv    = args.out,
     )

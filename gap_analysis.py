@@ -196,6 +196,27 @@ def eval_greedy_policy(net, env: CPDPTWEnv) -> tuple[float, bool]:
     return env.total_distance, done
 
 
+def eval_random_policy(env: CPDPTWEnv, n_trials: int = 10) -> tuple[float, bool]:
+    """Uniform random over feasible actions. Returns (mean_dist, mean_done) over n_trials."""
+    import random
+    dists, dones = [], []
+    for _ in range(n_trials):
+        env.reset(regenerate=False)
+        done = False
+        for _ in range(4 * env.n_total):
+            mask = env.action_mask()
+            if not mask.any():
+                break
+            choices = mask.nonzero(as_tuple=True)[0].tolist()
+            action = random.choice(choices)
+            _, _, done, _, _ = env.step(action)
+            if done:
+                break
+        dists.append(env.total_distance)
+        dones.append(done)
+    return float(np.mean(dists)), float(np.mean(dones)) >= 0.5
+
+
 # --------------------------------------------------------------------------- #
 # Parameter counting
 # --------------------------------------------------------------------------- #
@@ -245,6 +266,50 @@ def analyze(
     print("-" * 76)
 
     for model in models:
+        # "random" is a parameter-free baseline — no checkpoint needed.
+        if model == "random":
+            for seed in seeds:
+                env = CPDPTWEnv(node=node, vehicle_capacity=capacity, rng_seed=seed)
+                env.reset(regenerate=True)
+                if mode == "fixed":
+                    _, ref_dist, _, _ = reference_solve(env)
+                    rl_dist, done = eval_random_policy(env)
+                    gap = (rl_dist - ref_dist) / max(ref_dist, 1e-6) * 100.0
+                    done_str = "Y" if done else "N"
+                else:
+                    gaps, dists, dones = [], [], []
+                    for es in _POLICY_EVAL_SEEDS:
+                        eval_env = CPDPTWEnv(node=node, vehicle_capacity=capacity,
+                                            rng_seed=es)
+                        eval_env.reset(regenerate=True)
+                        _, ref_d, _, _ = reference_solve(eval_env)
+                        rl_d, d = eval_random_policy(eval_env)
+                        gaps.append((rl_d - ref_d) / max(ref_d, 1e-6) * 100.0)
+                        dists.append(rl_d)
+                        dones.append(d)
+                    gap     = float(np.mean(gaps))
+                    rl_dist = float(np.mean(dists))
+                    ref_dist = rl_dist / (1 + gap / 100.0)
+                    done_str = f"{np.mean(dones):.0%}"
+                print(f"{'random':12s} {seed:4d} {'—':>7s} {'—':>6s} "
+                      f"{ref_dist:9.4f} {rl_dist:9.4f} {gap:7.2f}% {done_str:4s}")
+                rows.append({
+                    "model":        "random",
+                    "node":         node,
+                    "n_qubits":     0,
+                    "n_layers":     0,
+                    "encoding":     encoding,
+                    "mode":         mode,
+                    "seed":         seed,
+                    "total_params": 0,
+                    "pqc_params":   0,
+                    "ref_dist":     round(ref_dist, 6),
+                    "rl_dist":      round(rl_dist, 6),
+                    "gap_pct":      round(gap, 4),
+                    "ref_method":   ref_label,
+                })
+            continue
+
         for seed in seeds:
             ckpt = f"{prefix}_{model}_s{seed}.pt"
             if not os.path.exists(ckpt):
@@ -384,7 +449,7 @@ if __name__ == "__main__":
     ap.add_argument("--models",    nargs="+",
                     default=["quantum", "qaoa", "node-quantum", "node-qaoa", "classical"],
                     choices=["quantum", "qaoa", "node-quantum", "node-qaoa",
-                             "classical", "classical-qaoa"])
+                             "classical", "classical-qaoa", "random"])
     ap.add_argument("--seeds",     type=int, nargs="+", default=list(range(7)))
     ap.add_argument("--node",      type=int, default=4)
     ap.add_argument("--n-qubits",  type=int, default=9)
