@@ -47,11 +47,20 @@
 module purge
 module load python/3.10 scipy-stack
 
-source "$HOME/py310_nibi/bin/activate" || {
-    echo "ERROR: ~/py310_nibi not found."
-    echo "Run the one-time setup commands shown at the top of this file."
+_VENV=""
+for _V in \
+    "$HOME/py310_nibi/bin/activate" \
+    "$HOME/py310_env/bin/activate"  \
+    "$HOME/py310/bin/activate"; do
+    [ -f "$_V" ] && { _VENV="$_V"; break; }
+done
+[ -z "$_VENV" ] && {
+    echo "ERROR: no virtualenv found. Tried py310_nibi, py310_env, py310."
+    echo "Run: python3 -m venv ~/py310_nibi && source ~/py310_nibi/bin/activate && pip install pennylane torch numpy"
     exit 1
 }
+echo "[venv] $_VENV"
+source "$_VENV"
 
 # Pin each Python process to exactly 1 CPU thread so N parallel processes
 # cleanly occupy N cores without spawning competing PyTorch/NumPy thread pools.
