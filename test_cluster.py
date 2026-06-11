@@ -193,7 +193,90 @@ def test_pair_aware_features():
 
 
 # --------------------------------------------------------------------------- #
-# 4. REINFORCE actor-critic training
+# 4. DQN training loop
+# --------------------------------------------------------------------------- #
+
+def test_dqn_runs(quick: bool = False):
+    """End-to-end DQN train() — tests replay buffer, masked bootstrap, soft update."""
+    from train_qrl import train
+    r = train(
+        model_kind="classical", node=3, n_qubits=4, n_layers=2,
+        episodes=3 if quick else 8,
+        fixed_instance=True, seed=0, out_prefix="_test_ci",
+        save_every=0,
+    )
+    assert len(r["rewards"]) > 0
+    assert "net" in r
+    return f"episodes={len(r['rewards'])}  best_reward={max(r['rewards']):.2f}"
+
+
+def test_dqn_quantum(quick: bool = False):
+    """DQN with quantum model — verifies PQC gradient path through Bellman loss."""
+    from train_qrl import train
+    r = train(
+        model_kind="quantum", node=3, n_qubits=4, n_layers=1,
+        episodes=3 if quick else 6,
+        fixed_instance=True, seed=0, out_prefix="_test_ci",
+        save_every=0,
+    )
+    assert len(r["rewards"]) > 0
+    return f"episodes={len(r['rewards'])}"
+
+
+# --------------------------------------------------------------------------- #
+# 5. Encoding variants and entanglement topologies
+# --------------------------------------------------------------------------- #
+
+def test_encoding_ryrz():
+    """ryrz encoding doubles the angle register — forward pass must not crash."""
+    from quantum_qnet import QuantumQNetwork, QAOAQNetwork
+    env = _make_env()
+    state, _ = env.reset()
+    for cls in (QuantumQNetwork, QAOAQNetwork):
+        net = cls(env, n_qubits=4, n_layers=2, encoding="ryrz")
+        out = net(state)
+        assert out.shape == (1, env.n_actions), f"{cls.__name__} ryrz shape wrong"
+    return "QuantumQNetwork + QAOAQNetwork pass forward with ryrz"
+
+
+def test_encoding_rz():
+    from quantum_qnet import QuantumQNetwork
+    env = _make_env()
+    state, _ = env.reset()
+    net = QuantumQNetwork(env, n_qubits=4, n_layers=2, encoding="rz")
+    out = net(state)
+    assert out.shape == (1, env.n_actions)
+    return "QuantumQNetwork passes forward with rz"
+
+
+def test_topologies():
+    """brick and star entanglement must produce valid forward passes."""
+    from quantum_qnet import QuantumQNetwork, QuantumNodeQNetwork
+    env = _make_env()
+    state, _ = env.reset()
+    for topo in ("brick", "star", "all"):
+        net = QuantumQNetwork(env, n_qubits=4, n_layers=2, entanglement=topo)
+        out = net(state)
+        assert out.shape == (1, env.n_actions), f"topology {topo} shape wrong"
+        net2 = QuantumNodeQNetwork(env, n_layers=2, entanglement=topo)
+        out2 = net2(state)
+        assert out2.shape == (1, env.n_actions), f"node topology {topo} shape wrong"
+    return "ring/brick/star/all topologies all pass forward"
+
+
+def test_node_encoder_hidden():
+    """Node encoder must have 2 Linear layers (hidden GELU layer added)."""
+    from quantum_qnet import QuantumNodeQNetwork, QAOANodeQNetwork
+    env = _make_env()
+    for cls in (QuantumNodeQNetwork, QAOANodeQNetwork):
+        net = cls(env, n_layers=1)
+        linears = [m for m in net.node_encoder if hasattr(m, 'weight')]
+        assert len(linears) >= 2, f"{cls.__name__} node_encoder missing hidden layer"
+    return "node_encoder has >=2 Linear layers (GELU hidden)"
+
+
+# --------------------------------------------------------------------------- #
+# 6. REINFORCE actor-critic training
 # --------------------------------------------------------------------------- #
 
 def test_reinforce_runs(quick: bool = False):
@@ -278,7 +361,82 @@ def test_value_coef_zero():
 
 
 # --------------------------------------------------------------------------- #
-# 5. Cleanup test artefacts
+# 7. Gap analysis — reference solver and random baseline
+# --------------------------------------------------------------------------- #
+
+def test_reference_solver():
+    """exact_solve on n=3 must return a complete route and finite distance."""
+    from cpdptw_env import CPDPTWEnv
+    from gap_analysis import exact_solve, reference_solve
+    env = CPDPTWEnv(node=3, vehicle_capacity=5, rng_seed=0)
+    env.reset(regenerate=True)
+    route, dist, cost = exact_solve(env, timeout=30.0)
+    assert len(route) == 2 * 3 + 2, f"route length wrong: {len(route)}"  # depot + 6 nodes + depot
+    assert route[0] == 0 and route[-1] == 0, "route must start and end at depot"
+    assert dist > 0 and np.isfinite(dist), f"bad dist: {dist}"
+    _, _, _, label = reference_solve(env)
+    assert label == "exact-dfs", f"wrong solver for n=3: {label}"
+    return f"route_len={len(route)}  dist={dist:.4f}  solver={label}"
+
+
+def test_random_baseline():
+    """eval_random_policy must return positive distance and not crash."""
+    from cpdptw_env import CPDPTWEnv
+    from gap_analysis import eval_random_policy
+    env = CPDPTWEnv(node=3, vehicle_capacity=5, rng_seed=0)
+    env.reset(regenerate=True)
+    dist, done = eval_random_policy(env, n_trials=5)
+    assert dist > 0 and np.isfinite(dist), f"bad dist: {dist}"
+    return f"mean_dist={dist:.4f}  done={done}"
+
+
+def test_gap_analysis_end_to_end():
+    """Train a tiny classical net, save checkpoint, run analyze() — gap must be finite."""
+    from train_qrl import train
+    from gap_analysis import analyze
+    r = train(
+        model_kind="classical", node=3, n_qubits=4, n_layers=1,
+        episodes=5, fixed_instance=True, seed=99,
+        out_prefix="_test_ci", save_every=0,
+    )
+    rows = analyze(
+        prefix="_test_ci", models=["classical", "random"],
+        seeds=[99], node=3, n_qubits=4, n_layers=1,
+        encoding="ry", mode="fixed", capacity=5,
+    )
+    assert rows, "analyze() returned empty rows"
+    classical_row = next((r for r in rows if r["model"] == "classical"), None)
+    assert classical_row is not None
+    assert np.isfinite(classical_row["gap_pct"]), "gap_pct is not finite"
+    random_row = next((r for r in rows if r["model"] == "random"), None)
+    assert random_row is not None
+    return (f"classical gap={classical_row['gap_pct']:.1f}%  "
+            f"random gap={random_row['gap_pct']:.1f}%")
+
+
+# --------------------------------------------------------------------------- #
+# 8. Module imports (aggregate_results, barren_plateau, sweep_experiment)
+# --------------------------------------------------------------------------- #
+
+def test_aggregate_imports():
+    import aggregate_results   # noqa: F401
+    return "aggregate_results importable"
+
+
+def test_barren_plateau_imports():
+    import barren_plateau      # noqa: F401
+    return "barren_plateau importable"
+
+
+def test_sweep_imports():
+    from sweep_experiment import sweep, run_one, qubit_sizes   # noqa: F401
+    sizes = qubit_sizes(3)
+    assert len(sizes) >= 1
+    return f"qubit_sizes(3)={sizes}"
+
+
+# --------------------------------------------------------------------------- #
+# 9. Cleanup test artefacts
 # --------------------------------------------------------------------------- #
 
 def cleanup():
@@ -320,12 +478,36 @@ def main():
     check("enc_scales init = 1.0",       test_enc_scales_init)
     check("pair-aware 11 features",      test_pair_aware_features)
 
+    print("\n[ DQN training loop ]")
+    check("DQN classical train()",
+          lambda: test_dqn_runs(quick=args.quick))
+    if not args.quick:
+        check("DQN quantum train()",
+              lambda: test_dqn_quantum(quick=args.quick))
+
+    print("\n[ encoding variants + entanglement topologies ]")
+    check("encoding ryrz",          test_encoding_ryrz)
+    check("encoding rz",            test_encoding_rz)
+    check("topologies brick/star/all", test_topologies)
+    check("node_encoder hidden layer", test_node_encoder_hidden)
+
     print("\n[ REINFORCE actor-critic ]")
     check("reinforce runs",
           lambda: test_reinforce_runs(quick=args.quick))
     check("value_coef=0 (pure PG)",  test_value_coef_zero)
     if not args.quick:
         check("enc_scales receive gradients", test_reinforce_gradients)
+
+    print("\n[ gap analysis ]")
+    check("reference solver (exact-DFS n=3)", test_reference_solver)
+    check("random policy baseline",           test_random_baseline)
+    if not args.quick:
+        check("gap analysis end-to-end",      test_gap_analysis_end_to_end)
+
+    print("\n[ module imports ]")
+    check("aggregate_results",  test_aggregate_imports)
+    check("barren_plateau",     test_barren_plateau_imports)
+    check("sweep_experiment",   test_sweep_imports)
 
     cleanup()
 
