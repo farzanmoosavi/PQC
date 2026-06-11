@@ -14,6 +14,7 @@ Exit code 0 = all tests passed.  Non-zero = at least one test failed.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import traceback
 
@@ -23,6 +24,11 @@ import torch
 PASS = "PASS"
 FAIL = "FAIL"
 results: list[tuple[str, bool, str]] = []
+
+# Unique prefix per job so concurrent smoke tests on the same filesystem
+# don't overwrite each other's artefacts.
+_JOB_ID = os.environ.get("SLURM_JOB_ID", str(os.getpid()))
+_TEST_PREFIX = f"_test_ci_{_JOB_ID}"
 
 
 def check(name: str, fn):
@@ -202,7 +208,7 @@ def test_dqn_runs(quick: bool = False):
     r = train(
         model_kind="classical", node=3, n_qubits=4, n_layers=2,
         episodes=3 if quick else 8,
-        fixed_instance=True, seed=0, out_prefix="_test_ci",
+        fixed_instance=True, seed=0, out_prefix=_TEST_PREFIX,
         save_every=0,
     )
     assert len(r["rewards"]) > 0
@@ -216,7 +222,7 @@ def test_dqn_quantum(quick: bool = False):
     r = train(
         model_kind="quantum", node=3, n_qubits=4, n_layers=1,
         episodes=3 if quick else 6,
-        fixed_instance=True, seed=0, out_prefix="_test_ci",
+        fixed_instance=True, seed=0, out_prefix=_TEST_PREFIX,
         save_every=0,
     )
     assert len(r["rewards"]) > 0
@@ -284,7 +290,7 @@ def test_reinforce_runs(quick: bool = False):
     r = train_reinforce(
         model_kind="quantum", node=3, n_qubits=4, n_layers=2,
         episodes=3 if quick else 10,
-        fixed_instance=True, seed=0, out_prefix="_test_ci",
+        fixed_instance=True, seed=0, out_prefix=_TEST_PREFIX,
         value_coef=0.5,
     )
     assert len(r["rewards"]) > 0
@@ -354,7 +360,7 @@ def test_value_coef_zero():
     from reinforce_qrl import train_reinforce
     r = train_reinforce(
         model_kind="classical", node=3, episodes=3,
-        fixed_instance=True, seed=0, out_prefix="_test_ci", value_coef=0.0,
+        fixed_instance=True, seed=0, out_prefix=_TEST_PREFIX, value_coef=0.0,
     )
     assert len(r["losses"]) > 0
     return "pure REINFORCE (value_coef=0) ran without error"
@@ -397,10 +403,10 @@ def test_gap_analysis_end_to_end():
     r = train(
         model_kind="classical", node=3, n_qubits=4, n_layers=1,
         episodes=5, fixed_instance=True, seed=99,
-        out_prefix="_test_ci", save_every=0,
+        out_prefix=_TEST_PREFIX, save_every=0,
     )
     rows = analyze(
-        prefix="_test_ci", models=["classical", "random"],
+        prefix=_TEST_PREFIX, models=["classical", "random"],
         seeds=[99], node=3, n_qubits=4, n_layers=1,
         encoding="ry", mode="fixed", capacity=5,
     )
@@ -441,7 +447,7 @@ def test_sweep_imports():
 
 def cleanup():
     import glob, os
-    for f in glob.glob("_test_ci_*"):
+    for f in glob.glob(f"{_TEST_PREFIX}_*"):
         try:
             os.remove(f)
         except OSError:
