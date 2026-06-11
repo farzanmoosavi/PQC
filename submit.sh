@@ -50,6 +50,7 @@ module load python/3.10 scipy-stack
 _VENV=""
 for _V in \
     "$HOME/py310_nibi/bin/activate" \
+    "$HOME/py310_fir/bin/activate"  \
     "$HOME/py310_env/bin/activate"  \
     "$HOME/py310/bin/activate"; do
     [ -f "$_V" ] && { _VENV="$_V"; break; }
