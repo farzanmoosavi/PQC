@@ -163,79 +163,91 @@ def measure_grad_var(
 
 
 # --------------------------------------------------------------------------- #
+# Process-pool helpers (module-level so workers are picklable)
+# --------------------------------------------------------------------------- #
+
+def _measure_task(args_kwargs: tuple) -> dict:
+    """ProcessPoolExecutor entry point — wraps measure_grad_var."""
+    args, kwargs = args_kwargs
+    return measure_grad_var(*args, **kwargs)
+
+
+def _run_parallel(configs: list[tuple], n_jobs: int) -> list[dict]:
+    """Run a list of (args, kwargs) measure_grad_var configs, optionally in parallel."""
+    if n_jobs == 1:
+        rows = []
+        for args, kwargs in configs:
+            r = measure_grad_var(*args, **kwargs)
+            print(f"  {r['model']:8s}  q={r['n_qubits']:2d}  l={r['n_layers']}  "
+                  f"mean_var={r['mean_var']:.2e}  ({r['wall_sec']:.1f}s)")
+            rows.append(r)
+        return rows
+    from concurrent.futures import ProcessPoolExecutor
+    print(f"  launching {len(configs)} configs across {n_jobs} workers ...")
+    with ProcessPoolExecutor(max_workers=min(n_jobs, len(configs))) as ex:
+        rows = list(ex.map(_measure_task, configs))
+    for r in rows:
+        print(f"  {r['model']:8s}  q={r['n_qubits']:2d}  l={r['n_layers']}  "
+              f"mean_var={r['mean_var']:.2e}  ({r['wall_sec']:.1f}s)")
+    return rows
+
+
+# --------------------------------------------------------------------------- #
 # Scan drivers
 # --------------------------------------------------------------------------- #
 
-def scan_qubits(n_trials: int, node: int) -> list[dict]:
+def scan_qubits(n_trials: int, node: int, n_jobs: int = 1) -> list[dict]:
     """Var vs n_qubits at fixed depth=FIXED_DEPTH for quantum and qaoa."""
-    print(f"\n[scan_qubits]  n_layers={FIXED_DEPTH}  trials={n_trials}")
-    rows = []
-    for nq in QUBIT_SCAN:
-        for mk in ("quantum", "qaoa"):
-            print(f"  {mk:8s}  q={nq:2d} ...", end=" ", flush=True)
-            r = measure_grad_var(mk, nq, FIXED_DEPTH, n_trials, node)
-            rows.append(r)
-            print(f"mean_var={r['mean_var']:.2e}  ({r['wall_sec']:.1f}s)")
-    return rows
+    print(f"\n[scan_qubits]  n_layers={FIXED_DEPTH}  trials={n_trials}  n_jobs={n_jobs}")
+    configs = [
+        ((mk, nq, FIXED_DEPTH, n_trials, node), {})
+        for nq in QUBIT_SCAN for mk in ("quantum", "qaoa")
+    ]
+    return _run_parallel(configs, n_jobs)
 
 
-def scan_layers(n_trials: int, node: int) -> list[dict]:
+def scan_layers(n_trials: int, node: int, n_jobs: int = 1) -> list[dict]:
     """Var vs n_layers at fixed width=FIXED_WIDTH for quantum and qaoa."""
-    print(f"\n[scan_layers]  n_qubits={FIXED_WIDTH}  trials={n_trials}")
-    rows = []
-    for nl in LAYER_SCAN:
-        for mk in ("quantum", "qaoa"):
-            print(f"  {mk:8s}  l={nl} ...", end=" ", flush=True)
-            r = measure_grad_var(mk, FIXED_WIDTH, nl, n_trials, node)
-            rows.append(r)
-            print(f"mean_var={r['mean_var']:.2e}  ({r['wall_sec']:.1f}s)")
-    return rows
+    print(f"\n[scan_layers]  n_qubits={FIXED_WIDTH}  trials={n_trials}  n_jobs={n_jobs}")
+    configs = [
+        ((mk, FIXED_WIDTH, nl, n_trials, node), {})
+        for nl in LAYER_SCAN for mk in ("quantum", "qaoa")
+    ]
+    return _run_parallel(configs, n_jobs)
 
 
-def scan_topology(n_trials: int, node: int) -> list[dict]:
+def scan_topology(n_trials: int, node: int, n_jobs: int = 1) -> list[dict]:
     """Var for ring/brick/all/star at fixed (FIXED_WIDTH, FIXED_DEPTH).
     Only applicable to QuantumQNetwork (HEA); QAOA topology is always ring."""
     print(f"\n[scan_topology]  n_qubits={FIXED_WIDTH}  n_layers={FIXED_DEPTH}"
-          f"  trials={n_trials}")
-    rows = []
-    for topo in ("ring", "brick", "all", "star"):
-        print(f"  quantum  topo={topo:5s} ...", end=" ", flush=True)
-        r = measure_grad_var("quantum", FIXED_WIDTH, FIXED_DEPTH,
-                             n_trials, node, entanglement=topo)
-        rows.append(r)
-        print(f"mean_var={r['mean_var']:.2e}  ({r['wall_sec']:.1f}s)")
-    return rows
+          f"  trials={n_trials}  n_jobs={n_jobs}")
+    configs = [
+        (("quantum", FIXED_WIDTH, FIXED_DEPTH, n_trials, node), {"entanglement": topo})
+        for topo in ("ring", "brick", "all", "star")
+    ]
+    return _run_parallel(configs, n_jobs)
 
 
-def scan_encoding(n_trials: int, node: int) -> list[dict]:
+def scan_encoding(n_trials: int, node: int, n_jobs: int = 1) -> list[dict]:
     """Var for ry/rz/ryrz encoding at fixed (FIXED_WIDTH, FIXED_DEPTH)."""
     print(f"\n[scan_encoding]  n_qubits={FIXED_WIDTH}  n_layers={FIXED_DEPTH}"
-          f"  trials={n_trials}")
-    rows = []
-    for enc in ("ry", "rz", "ryrz"):
-        for mk in ("quantum", "qaoa"):
-            print(f"  {mk:8s}  enc={enc:5s} ...", end=" ", flush=True)
-            r = measure_grad_var(mk, FIXED_WIDTH, FIXED_DEPTH,
-                                 n_trials, node, encoding=enc)
-            rows.append(r)
-            print(f"mean_var={r['mean_var']:.2e}  ({r['wall_sec']:.1f}s)")
-    return rows
+          f"  trials={n_trials}  n_jobs={n_jobs}")
+    configs = [
+        ((mk, FIXED_WIDTH, FIXED_DEPTH, n_trials, node), {"encoding": enc})
+        for enc in ("ry", "rz", "ryrz") for mk in ("quantum", "qaoa")
+    ]
+    return _run_parallel(configs, n_jobs)
 
 
-def scan_hinit(n_trials: int, node: int) -> list[dict]:
+def scan_hinit(n_trials: int, node: int, n_jobs: int = 1) -> list[dict]:
     """Var for H-init vs |0>-init at fixed (FIXED_WIDTH, FIXED_DEPTH)."""
     print(f"\n[scan_hinit]  n_qubits={FIXED_WIDTH}  n_layers={FIXED_DEPTH}"
-          f"  trials={n_trials}")
-    rows = []
-    for hi in (True, False):
-        for mk in ("quantum", "qaoa"):
-            label = "H-init" if hi else "|0>-init"
-            print(f"  {mk:8s}  {label} ...", end=" ", flush=True)
-            r = measure_grad_var(mk, FIXED_WIDTH, FIXED_DEPTH,
-                                 n_trials, node, h_init=hi)
-            rows.append(r)
-            print(f"mean_var={r['mean_var']:.2e}  ({r['wall_sec']:.1f}s)")
-    return rows
+          f"  trials={n_trials}  n_jobs={n_jobs}")
+    configs = [
+        ((mk, FIXED_WIDTH, FIXED_DEPTH, n_trials, node), {"h_init": hi})
+        for hi in (True, False) for mk in ("quantum", "qaoa")
+    ]
+    return _run_parallel(configs, n_jobs)
 
 
 # --------------------------------------------------------------------------- #
@@ -288,16 +300,17 @@ def run_all(
     n_trials: int,
     node: int,
     out_csv: str,
+    n_jobs: int = 1,
 ) -> list[dict]:
     all_rows: list[dict] = []
     fieldnames: list[str] = []
 
     scan_map = {
-        "qubits":   lambda: scan_qubits(n_trials, node),
-        "layers":   lambda: scan_layers(n_trials, node),
-        "topology": lambda: scan_topology(n_trials, node),
-        "encoding": lambda: scan_encoding(n_trials, node),
-        "hinit":    lambda: scan_hinit(n_trials, node),
+        "qubits":   lambda: scan_qubits(n_trials, node, n_jobs),
+        "layers":   lambda: scan_layers(n_trials, node, n_jobs),
+        "topology": lambda: scan_topology(n_trials, node, n_jobs),
+        "encoding": lambda: scan_encoding(n_trials, node, n_jobs),
+        "hinit":    lambda: scan_hinit(n_trials, node, n_jobs),
     }
     print_map = {
         "qubits":   lambda r: _print_qubit_table(r),
@@ -391,6 +404,9 @@ if __name__ == "__main__":
                     help=f"n_requests for env (default: {DEFAULT_NODE}, smallest)")
     ap.add_argument("--out",     default="barren_plateau.csv",
                     help="Output CSV path")
+    ap.add_argument("--n-jobs",   type=int, default=1,
+                    help="Parallel workers for config-level parallelism (default: 1). "
+                         "Set to $SLURM_CPUS_PER_TASK on the cluster.")
     ap.add_argument("--quick",   action="store_true",
                     help=f"Use {QUICK_TRIALS} trials instead of {DEFAULT_TRIALS}")
     ap.add_argument("--plot",    action="store_true",
@@ -398,7 +414,7 @@ if __name__ == "__main__":
     args = ap.parse_args()
 
     n_trials = QUICK_TRIALS if args.quick else args.trials
-    rows = run_all(args.scan, n_trials, args.node, args.out)
+    rows = run_all(args.scan, n_trials, args.node, args.out, n_jobs=args.n_jobs)
 
     if args.plot:
         plot_results(args.out)

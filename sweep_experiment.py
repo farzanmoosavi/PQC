@@ -67,6 +67,21 @@ def qubit_sizes(node: int) -> list[int]:
 
 
 # --------------------------------------------------------------------------- #
+# Process-pool task wrapper (module-level so it is picklable)
+# --------------------------------------------------------------------------- #
+
+def _run_one_task(args: tuple) -> dict:
+    """Called by ProcessPoolExecutor workers — must live at module level."""
+    model, node, nq, nl, seed, episodes, topo = args
+    try:
+        return run_one(model, node, nq, nl, seed, episodes, entanglement=topo)
+    except Exception as exc:
+        return {"model": model, "node": node, "n_qubits": nq,
+                "n_layers": nl, "seed": seed, "entanglement": topo,
+                "error": str(exc)}
+
+
+# --------------------------------------------------------------------------- #
 # Single-configuration runner
 # --------------------------------------------------------------------------- #
 
@@ -174,9 +189,12 @@ def sweep(
     models:     list[str] = DEFAULT_MODELS,
     topologies: list[str] = DEFAULT_TOPOLOGIES,
     out_csv:    str       = "sweep_results.csv",
+    n_jobs:     int       = 1,
 ) -> list[dict]:
-    rows: list[dict] = []
-    configs = [
+    _node_models = {"node-quantum", "node-qaoa"}
+
+    # Build full config list; filter node-model redundancies upfront.
+    all_configs = [
         (model, node, nq, nl, s, topo)
         for node  in nodes
         for nq    in qubit_sizes(node)
@@ -185,44 +203,66 @@ def sweep(
         for model in models
         for topo  in topologies
     ]
-    total = len(configs)
-    print(f"Sweep: {total} runs  ({len(nodes)} nodes x "
-          f"{len([nq for node in nodes for nq in qubit_sizes(node)])} qubit configs x "
-          f"{len(layers)} layer depths x {len(seeds)} seeds x "
-          f"{len(models)} models x {len(topologies)} topologies)")
+    valid = [
+        c for c in all_configs
+        if not (c[0] in _node_models and c[2] != natural_qubits(c[1]))
+    ]
+    total   = len(valid)
+    skipped = len(all_configs) - total
+
+    print(f"Sweep: {total} runs  ({skipped} node-model redundancies skipped)")
+    print(f"  {len(nodes)} nodes × "
+          f"{len([nq for node in nodes for nq in qubit_sizes(node)])} qubit configs × "
+          f"{len(layers)} layers × {len(seeds)} seeds × "
+          f"{len(models)} models × {len(topologies)} topologies")
     print(f"Qubit counts by node: { {n: qubit_sizes(n) for n in nodes} }")
     print(f"Natural encoding: 2n+1 qubits  "
           f"({', '.join(f'n={n}->{natural_qubits(n)}q' for n in nodes)})")
-    print(f"Topologies: {topologies}")
+    print(f"Topologies: {topologies}  n_jobs={n_jobs}")
     print()
 
-    _node_models = {"node-quantum", "node-qaoa"}
+    rows:       list[dict] = []
+    fieldnames: list[str]  = []
 
-    fieldnames: list[str] = []
-    for i, (model, node, nq, nl, seed, topo) in enumerate(configs, 1):
-        # Node models fix n_qubits = 2*node+1; skip redundant qubit-size configs.
-        if model in _node_models and nq != natural_qubits(node):
-            print(f"[{i:3d}/{total}]  {model:9s}  n={node}  q={nq}  l={nl}  seed={seed}  topo={topo}  (skip — node model uses q={natural_qubits(node)})")
-            continue
-        print(f"[{i:3d}/{total}]  {model:9s}  n={node}  q={nq}  l={nl}  seed={seed}  topo={topo}")
-        try:
-            row = run_one(model, node, nq, nl, seed, episodes, entanglement=topo)
-        except Exception as exc:
-            print(f"  ERROR: {exc}")
-            row = {"model": model, "node": node, "n_qubits": nq,
-                   "n_layers": nl, "seed": seed, "entanglement": topo,
-                   "error": str(exc)}
-        rows.append(row)
-
-        if not fieldnames and "error" not in row:
-            fieldnames = list(row.keys())
-
-        # Write incrementally so a crash doesn't lose earlier results.
+    def _save(rows, fieldnames):
         with open(out_csv, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames or list(row.keys()),
+            writer = csv.DictWriter(f, fieldnames=fieldnames or list(rows[-1].keys()),
                                     extrasaction="ignore")
             writer.writeheader()
             writer.writerows(rows)
+
+    if n_jobs == 1:
+        for i, (model, node, nq, nl, seed, topo) in enumerate(valid, 1):
+            print(f"[{i:3d}/{total}]  {model:9s}  n={node}  q={nq}  l={nl}  seed={seed}  topo={topo}")
+            try:
+                row = run_one(model, node, nq, nl, seed, episodes, entanglement=topo)
+            except Exception as exc:
+                print(f"  ERROR: {exc}")
+                row = {"model": model, "node": node, "n_qubits": nq,
+                       "n_layers": nl, "seed": seed, "entanglement": topo, "error": str(exc)}
+            rows.append(row)
+            if not fieldnames and "error" not in row:
+                fieldnames = list(row.keys())
+            _save(rows, fieldnames)
+    else:
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        tasks = [(model, node, nq, nl, seed, episodes, topo) for (model, node, nq, nl, seed, topo) in valid]
+        print(f"Launching {total} configs across {n_jobs} workers ...")
+        with ProcessPoolExecutor(max_workers=n_jobs) as ex:
+            future_map = {ex.submit(_run_one_task, t): t for t in tasks}
+            done = 0
+            for fut in as_completed(future_map):
+                done += 1
+                model, node, nq, nl, seed, _, topo = future_map[fut]
+                row = fut.result()
+                rows.append(row)
+                if not fieldnames and "error" not in row:
+                    fieldnames = list(row.keys())
+                status = f"ERROR: {row['error']}" if "error" in row \
+                    else f"reward={row.get('final_reward_mean', 0):7.2f}"
+                print(f"[{done:3d}/{total}]  {model:9s}  n={node}  q={nq}  "
+                      f"l={nl}  seed={seed}  topo={topo}  {status}")
+                _save(rows, fieldnames)
 
     _print_summary(rows, nodes)
     print(f"\nFull results -> {out_csv}")
@@ -267,6 +307,9 @@ if __name__ == "__main__":
     ap.add_argument("--topologies", type=str, nargs="+", default=DEFAULT_TOPOLOGIES,
                     choices=["ring", "brick", "all", "star"],
                     help="Entanglement topologies to sweep (default: ring)")
+    ap.add_argument("--n-jobs",   type=int, default=1,
+                    help="Parallel workers (default: 1 = sequential). "
+                         "Set to $SLURM_CPUS_PER_TASK on the cluster.")
     ap.add_argument("--quick",    action="store_true",
                     help="1 seed, 80 episodes — for a fast sanity check")
     args = ap.parse_args()
@@ -283,4 +326,5 @@ if __name__ == "__main__":
         models     = args.models,
         topologies = args.topologies,
         out_csv    = args.out,
+        n_jobs     = args.n_jobs,
     )

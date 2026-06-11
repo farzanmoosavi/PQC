@@ -22,6 +22,11 @@
 #   sbatch --export=RUNG=T submit.sh              # Rung T: smoke-test only
 #   sbatch --export=RUNG=A,EPISODES=500 submit.sh
 #   sbatch --export=RUNG=B,SEEDS="0 1 2 3 4" submit.sh
+#
+# Recommended wall times (override default 24h with --time=HH:MM:SS):
+#   T  0:20:00    A  20:00:00    B  16:00:00    C  16:00:00
+#   D  8:00:00    E  22:00:00    F  1:00:00     G  8:00:00    H  20:00:00
+# Example: sbatch --time=1:00:00 --export=RUNG=F submit.sh
 # ============================================================
 
 #SBATCH --job-name=CE-PDPTW-qrl
@@ -47,6 +52,13 @@ source "$HOME/py310_nibi/bin/activate" || {
     echo "Run the one-time setup commands shown at the top of this file."
     exit 1
 }
+
+# Pin each Python process to exactly 1 CPU thread so N parallel processes
+# cleanly occupy N cores without spawning competing PyTorch/NumPy thread pools.
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
 
 # ============================================================
 # Locate project directory
@@ -104,6 +116,12 @@ mkdir -p "$OUT_DIR"
 # ============================================================
 
 run_bg() {
+    # Throttle to SLURM_CPUS_PER_TASK concurrent processes so we never
+    # over-subscribe the node (each process uses exactly 1 CPU thread).
+    local max_jobs="${SLURM_CPUS_PER_TASK:-32}"
+    while [ "$(jobs -rp | wc -l)" -ge "$max_jobs" ]; do
+        sleep 2
+    done
     local label="$1"; shift
     echo "[start] $label"
     python3 -u "$@" > "$OUT_DIR/${label}.log" 2>&1 &
@@ -232,6 +250,7 @@ if [ "$RUNG" = "D" ]; then
     echo "=== Rung D: hyperparameter sweep ==="
     python3 -u sweep_experiment.py \
         --node "$NODE" --episodes "$EPISODES" \
+        --n-jobs "$SLURM_CPUS_PER_TASK" \
         --out "$OUT_DIR/sweep.csv" \
         2>&1 | tee "$OUT_DIR/sweep.log"
     echo "=== Rung D done: $(date) ==="
@@ -341,6 +360,7 @@ if [ "$RUNG" = "F" ]; then
     python3 -u barren_plateau.py \
         --scan qubits layers topology encoding hinit \
         --trials 50 --node 3 \
+        --n-jobs "$SLURM_CPUS_PER_TASK" \
         --out "$OUT_DIR/barren_plateau.csv" \
         2>&1 | tee "$OUT_DIR/barren_plateau.log"
     echo "=== Rung F done: $(date) ==="
@@ -366,6 +386,7 @@ if [ "$RUNG" = "G" ]; then
         --models quantum qaoa \
         --seeds 0 1 2 \
         --episodes 200 \
+        --n-jobs "$SLURM_CPUS_PER_TASK" \
         --out "$OUT_DIR/topo_sweep.csv" \
         2>&1 | tee "$OUT_DIR/topo_sweep.log"
     echo "=== Rung G done: $(date) ==="
