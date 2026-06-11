@@ -96,10 +96,11 @@ class MaskedCategorical:
 # Build network (reuses train_qrl.build_net)
 # --------------------------------------------------------------------------- #
 
-def build_net(model_kind: str, env: CPDPTWEnv, n_qubits: int = 6, n_layers: int = 3):
+def build_net(model_kind: str, env: CPDPTWEnv, n_qubits: int = 6, n_layers: int = 3,
+              encoding: str = "ry", entanglement: str = "ring"):
     """Delegates to the same factory used by DQN training."""
     from train_qrl import build_net as _build_net
-    return _build_net(model_kind, env, n_qubits, n_layers)
+    return _build_net(model_kind, env, n_qubits, n_layers, encoding, entanglement)
 
 
 # --------------------------------------------------------------------------- #
