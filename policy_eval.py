@@ -280,7 +280,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Policy generalisation evaluation")
     ap.add_argument("--model", default="quantum",
                     choices=["quantum", "qaoa", "classical", "classical-qaoa",
-                             "node-quantum", "node-qaoa"])
+                             "node-quantum", "node-qaoa", "classical-large"])
     ap.add_argument("--compare", action="store_true",
                     help="Compare route vs policy learning for the chosen model")
     ap.add_argument("--all-models", action="store_true",
@@ -294,6 +294,8 @@ if __name__ == "__main__":
     ap.add_argument("--n-layers",        type=int, default=3)
     ap.add_argument("--quick", action="store_true",
                     help="20 train episodes, 5 eval seeds — fast sanity check")
+    ap.add_argument("--out-prefix", default="policy_eval",
+                    help="Output path prefix for generated .txt and .pt files.")
     args = ap.parse_args()
 
     if args.quick:
@@ -321,7 +323,6 @@ if __name__ == "__main__":
         )
         print_comparison(args.model, route_m, policy_m)
     else:
-        # Single policy-learning run
         m = train_and_evaluate(
             model_kind=args.model,
             node=args.node, capacity=args.capacity,
@@ -329,6 +330,7 @@ if __name__ == "__main__":
             eval_seeds=eval_seeds,
             n_qubits=args.n_qubits, n_layers=args.n_layers,
             fixed_instance=False,
+            out_prefix=args.out_prefix,
         )
         print(f"\nPolicy evaluation ({args.model}):")
         _print_metrics("policy", m)

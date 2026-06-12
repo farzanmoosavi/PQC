@@ -1,0 +1,29 @@
+# Generated output directories
+results/
+logs/
+
+# PyTorch checkpoints and metric logs
+*.pt
+*.txt
+
+# Result CSVs (summary/sweep outputs — not source files)
+sweep_results.csv
+summary*.csv
+gap_*.csv
+topo_sweep.csv
+barren_plateau.csv
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Misc
+.DS_Store
+claude.exe

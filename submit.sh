@@ -244,6 +244,17 @@ if [ "$RUNG" = "C" ]; then
 
     wait_all
     aggregate "$OUT_DIR/policy" "$PG_MODELS"
+
+    echo "--- evaluating generalisation on held-out seeds ---"
+    for MODEL in $PG_MODELS; do
+        run_bg "c_eval_${MODEL}" policy_eval.py \
+            --model "$MODEL" --node "$NODE" --capacity "$CAPACITY" \
+            --train-episodes "$EPISODES" --eval-seeds 20 \
+            --n-qubits "$N_QUBITS" --n-layers "$N_LAYERS" \
+            --out-prefix "$OUT_DIR/policy_eval"
+    done
+    wait_all
+
     echo "=== Rung C done: $(date) ==="
 fi
 
