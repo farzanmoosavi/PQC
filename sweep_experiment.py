@@ -42,10 +42,12 @@ DEFAULT_LAYERS   = [1, 2, 3, 4]
 DEFAULT_SEEDS    = [0, 1, 2]
 DEFAULT_EPISODES = 150
 DEFAULT_TOPOLOGIES = ["ring"]      # add "brick" "star" for topology sensitivity (Rung G)
-# Models compared.  "classical" and "classical-qaoa" are parameter-matched
-# to "quantum" and "qaoa" respectively via match_classical_width().
+# Models compared.  "classical"/"classical-qaoa" are parameter-matched to
+# their quantum counterparts.  "classical-large" uses hidden=max(32,F) — a
+# properly-sized MLP that can generalise to unseen instances; use it to test
+# whether quantum models achieve comparable generalisation with far fewer params.
 DEFAULT_MODELS   = ["quantum", "qaoa", "classical", "classical-qaoa",
-                    "node-quantum", "node-qaoa"]
+                    "node-quantum", "node-qaoa", "classical-large"]
 
 
 def natural_qubits(node: int) -> int:
@@ -298,8 +300,8 @@ if __name__ == "__main__":
                     help="RNG seeds (default: 0 1 2)")
     ap.add_argument("--models",   type=str,  nargs="+", default=DEFAULT_MODELS,
                     choices=["quantum", "qaoa", "classical", "classical-qaoa",
-                             "node-quantum", "node-qaoa"],
-                    help="Model types to include (default: all six)")
+                             "node-quantum", "node-qaoa", "classical-large"],
+                    help="Model types to include (default: all seven)")
     ap.add_argument("--episodes", type=int,  default=DEFAULT_EPISODES,
                     help="Training episodes per run (default: 150)")
     ap.add_argument("--out",      default="sweep_results.csv",

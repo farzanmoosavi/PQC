@@ -318,7 +318,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description="REINFORCE policy-gradient for CPDPTW")
     p.add_argument("--model",
                    choices=["quantum", "qaoa", "classical", "classical-qaoa",
-                            "node-quantum", "node-qaoa"],
+                            "node-quantum", "node-qaoa", "classical-large"],
                    default="quantum")
     p.add_argument("--node",      type=int,   default=5)
     p.add_argument("--capacity",  type=int,   default=5)

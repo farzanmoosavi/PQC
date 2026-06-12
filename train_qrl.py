@@ -185,6 +185,14 @@ def build_net(model_kind: str, env, n_qubits: int = 6, n_layers: int = 3,
         except Exception:
             w = 16
         return ClassicalQNetwork(env, hidden=w)
+    elif model_kind == "classical-large":
+        # Properly-sized baseline: hidden = max(32, F) so the MLP has enough
+        # capacity to learn routing heuristics and generalise to unseen instances.
+        # Use this to test whether quantum models achieve comparable generalisation
+        # with far fewer parameters (the core quantum-efficiency thesis claim).
+        from quantum_qnet import ClassicalQNetwork
+        w = max(32, env.n_observations)
+        return ClassicalQNetwork(env, hidden=w)
     raise ValueError(model_kind)
 
 
@@ -298,7 +306,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--model",
                    choices=["quantum", "qaoa", "classical", "classical-qaoa",
-                            "node-quantum", "node-qaoa"],
+                            "node-quantum", "node-qaoa", "classical-large"],
                    default="quantum")
     p.add_argument("--node",      type=int, default=5)
     p.add_argument("--capacity",  type=int, default=5)
