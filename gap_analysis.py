@@ -2,8 +2,9 @@
 gap_analysis.py — Chapter 6 optimality gap and parameter efficiency analysis.
 
 Compares trained RL policies against a reference solver:
-  n <= 5  →  exact distance-optimal DFS (minimises pure travel distance,
-             provably optimal, ~1-5 ms per instance).  gap_pct >= 0 guaranteed.
+  n <= 5  →  exact branch-and-bound (minimises the same objective as RL:
+             dist/dist_scale + time-window penalties; provably optimal,
+             milliseconds per instance).  gap_pct >= 0 is guaranteed.
   n >  5  →  greedy nearest-neighbour (near-optimal upper bound)
 
 Two evaluation modes
@@ -15,7 +16,9 @@ Two evaluation modes
            (seeds 200..219, never seen during training).
            Gap shows how well the agent generalises.
 
-Primary metric: gap_dist = (rl_dist − ref_dist) / ref_dist × 100 %
+Primary metric: gap_cost = (rl_cost - ref_cost) / ref_cost x 100 %
+  where cost = dist/dist_scale + time-window penalties (same as RL objective).
+  ref_dist and rl_dist are also reported for context.
 
 This directly supports the parameter-efficiency claim:
   "node-qaoa achieves G% gap with P_q PQC params;
@@ -208,12 +211,12 @@ def greedy_solve(env: CPDPTWEnv) -> tuple[list[int], float, float]:
 
 def reference_solve(env: CPDPTWEnv) -> tuple[list[int], float, float, str]:
     if env.node <= 5:
-        # Distance-optimal exact solver: minimises pure travel distance.
-        # gap_pct = (rl_dist - ref_dist) / ref_dist >= 0 is guaranteed because
-        # no feasible route can be shorter than the distance-optimal solution.
-        route, dist = exact_solve_dist(env)
-        _, cost = _route_dist_cost(route, env)
-        return route, dist, cost, "exact-dist-opt"
+        # Cost-optimal exact branch-and-bound: minimises the same objective as
+        # the RL reward (dist/dist_scale + time-window penalties).
+        # gap_pct = (rl_cost - ref_cost) / ref_cost >= 0 is guaranteed because
+        # no feasible route can achieve lower cost than this exact optimum.
+        r, d, c = exact_solve(env)
+        return r, d, c, "exact-B&B"
     r, d, c = greedy_solve(env)
     return r, d, c, "greedy-nn"
 
@@ -222,11 +225,13 @@ def reference_solve(env: CPDPTWEnv) -> tuple[list[int], float, float, str]:
 # RL policy evaluation
 # --------------------------------------------------------------------------- #
 
-def eval_greedy_policy(net, env: CPDPTWEnv) -> tuple[float, bool]:
-    """Greedy rollout (argmax, no exploration). Returns (total_dist, completed)."""
+def eval_greedy_policy(net, env: CPDPTWEnv) -> tuple[float, float, bool]:
+    """Greedy rollout (argmax). Returns (total_dist, total_cost, completed).
+    total_cost = dist/dist_scale + time-window penalties — same as RL objective."""
     device = next(net.parameters()).device
     state, _ = env.reset(regenerate=False)
     done = False
+    total_reward = 0.0
     for _ in range(4 * env.n_total):
         mask = env.action_mask()
         if not mask.any():
@@ -235,31 +240,35 @@ def eval_greedy_policy(net, env: CPDPTWEnv) -> tuple[float, bool]:
             logits = net(state.to(device)).squeeze(0)
         logits = logits.masked_fill(~mask.to(device), -float('inf'))
         action = int(logits.argmax().item())
-        state, _, done, _, _ = env.step(action)
+        state, reward, done, _, _ = env.step(action)
+        total_reward += reward.item()
         if done:
             break
-    return env.total_distance, done
+    return env.total_distance, -total_reward, done
 
 
-def eval_random_policy(env: CPDPTWEnv, n_trials: int = 10) -> tuple[float, bool]:
-    """Uniform random over feasible actions. Returns (mean_dist, mean_done) over n_trials."""
+def eval_random_policy(env: CPDPTWEnv, n_trials: int = 10) -> tuple[float, float, bool]:
+    """Uniform random over feasible actions. Returns (mean_dist, mean_cost, mean_done)."""
     import random
-    dists, dones = [], []
+    dists, costs, dones = [], [], []
     for _ in range(n_trials):
         env.reset(regenerate=False)
         done = False
+        total_reward = 0.0
         for _ in range(4 * env.n_total):
             mask = env.action_mask()
             if not mask.any():
                 break
             choices = mask.nonzero(as_tuple=True)[0].tolist()
             action = random.choice(choices)
-            _, _, done, _, _ = env.step(action)
+            _, reward, done, _, _ = env.step(action)
+            total_reward += reward.item()
             if done:
                 break
         dists.append(env.total_distance)
+        costs.append(-total_reward)
         dones.append(done)
-    return float(np.mean(dists)), float(np.mean(dones)) >= 0.5
+    return float(np.mean(dists)), float(np.mean(costs)), float(np.mean(dones)) >= 0.5
 
 
 # --------------------------------------------------------------------------- #
@@ -300,15 +309,15 @@ def analyze(
     from train_qrl import build_net
 
     rows = []
-    ref_label = "exact-DFS" if node <= 5 else "greedy-NN"
-    print(f"\n{'='*76}")
+    ref_label = "exact-B&B" if node <= 5 else "greedy-nn"
+    print(f"\n{'='*84}")
     print(f"Gap analysis | node={node} n_qubits={n_qubits} n_layers={n_layers} "
           f"encoding={encoding} mode={mode}")
-    print(f"Reference: {ref_label}  prefix={prefix}")
-    print(f"{'='*76}")
+    print(f"Reference: {ref_label} (same objective: dist/scale + time-window penalties)")
+    print(f"{'='*84}")
     print(f"{'model':12s} {'seed':4s} {'params':7s} {'pqc':6s} "
-          f"{'ref_dist':9s} {'rl_dist':9s} {'gap%':7s} {'done':4s}")
-    print("-" * 76)
+          f"{'ref_cost':9s} {'rl_cost':9s} {'ref_dist':9s} {'rl_dist':9s} {'gap%':7s} {'done':4s}")
+    print("-" * 84)
 
     for model in models:
         # "random" is a parameter-free baseline — no checkpoint needed.
@@ -317,27 +326,29 @@ def analyze(
                 env = CPDPTWEnv(node=node, vehicle_capacity=capacity, rng_seed=seed)
                 env.reset(regenerate=True)
                 if mode == "fixed":
-                    _, ref_dist, _, _ = reference_solve(env)
-                    rl_dist, done = eval_random_policy(env)
-                    gap = (rl_dist - ref_dist) / max(ref_dist, 1e-6) * 100.0
+                    _, ref_dist, ref_cost, _ = reference_solve(env)
+                    rl_dist, rl_cost, done = eval_random_policy(env)
+                    gap = (rl_cost - ref_cost) / max(ref_cost, 1e-6) * 100.0
                     done_str = "Y" if done else "N"
                 else:
-                    gaps, dists, dones = [], [], []
+                    gaps, ref_dists, ref_costs, rl_dists, rl_costs, dones = [], [], [], [], [], []
                     for es in _POLICY_EVAL_SEEDS:
                         eval_env = CPDPTWEnv(node=node, vehicle_capacity=capacity,
                                             rng_seed=es)
                         eval_env.reset(regenerate=True)
-                        _, ref_d, _, _ = reference_solve(eval_env)
-                        rl_d, d = eval_random_policy(eval_env)
-                        gaps.append((rl_d - ref_d) / max(ref_d, 1e-6) * 100.0)
-                        dists.append(rl_d)
+                        _, ref_d, ref_c, _ = reference_solve(eval_env)
+                        rl_d, rl_c, d = eval_random_policy(eval_env)
+                        gaps.append((rl_c - ref_c) / max(ref_c, 1e-6) * 100.0)
+                        ref_dists.append(ref_d); ref_costs.append(ref_c)
+                        rl_dists.append(rl_d);  rl_costs.append(rl_c)
                         dones.append(d)
-                    gap     = float(np.mean(gaps))
-                    rl_dist = float(np.mean(dists))
-                    ref_dist = rl_dist / (1 + gap / 100.0)
+                    gap      = float(np.mean(gaps))
+                    ref_dist = float(np.mean(ref_dists)); ref_cost = float(np.mean(ref_costs))
+                    rl_dist  = float(np.mean(rl_dists));  rl_cost  = float(np.mean(rl_costs))
                     done_str = f"{np.mean(dones):.0%}"
                 print(f"{'random':12s} {seed:4d} {'—':>7s} {'—':>6s} "
-                      f"{ref_dist:9.4f} {rl_dist:9.4f} {gap:7.2f}% {done_str:4s}")
+                      f"{ref_cost:9.4f} {rl_cost:9.4f} {ref_dist:9.4f} {rl_dist:9.4f} "
+                      f"{gap:7.2f}% {done_str:4s}")
                 rows.append({
                     "model":        "random",
                     "node":         node,
@@ -348,6 +359,8 @@ def analyze(
                     "seed":         seed,
                     "total_params": 0,
                     "pqc_params":   0,
+                    "ref_cost":     round(ref_cost, 6),
+                    "rl_cost":      round(rl_cost, 6),
                     "ref_dist":     round(ref_dist, 6),
                     "rl_dist":      round(rl_dist, 6),
                     "gap_pct":      round(gap, 4),
@@ -377,29 +390,31 @@ def analyze(
 
             if mode == "fixed":
                 # Same instance as training seed.
-                _, ref_dist, _, _ = reference_solve(env)
-                rl_dist, done = eval_greedy_policy(net, env)
-                gap = (rl_dist - ref_dist) / max(ref_dist, 1e-6) * 100.0
+                _, ref_dist, ref_cost, _ = reference_solve(env)
+                rl_dist, rl_cost, done = eval_greedy_policy(net, env)
+                gap = (rl_cost - ref_cost) / max(ref_cost, 1e-6) * 100.0
                 done_str = "Y" if done else "N"
             else:
                 # Policy mode: 20 held-out instances never seen during training.
-                gaps, dists, dones = [], [], []
+                gaps, ref_dists, ref_costs, rl_dists, rl_costs, dones = [], [], [], [], [], []
                 for es in _POLICY_EVAL_SEEDS:
                     eval_env = CPDPTWEnv(node=node, vehicle_capacity=capacity,
                                         rng_seed=es)
                     eval_env.reset(regenerate=True)
-                    _, ref_d, _, _ = reference_solve(eval_env)
-                    rl_d, d = eval_greedy_policy(net, eval_env)
-                    gaps.append((rl_d - ref_d) / max(ref_d, 1e-6) * 100.0)
-                    dists.append(rl_d)
+                    _, ref_d, ref_c, _ = reference_solve(eval_env)
+                    rl_d, rl_c, d = eval_greedy_policy(net, eval_env)
+                    gaps.append((rl_c - ref_c) / max(ref_c, 1e-6) * 100.0)
+                    ref_dists.append(ref_d); ref_costs.append(ref_c)
+                    rl_dists.append(rl_d);  rl_costs.append(rl_c)
                     dones.append(d)
-                gap     = float(np.mean(gaps))
-                rl_dist = float(np.mean(dists))
-                ref_dist = rl_dist / (1 + gap / 100.0)   # back-compute mean ref
+                gap      = float(np.mean(gaps))
+                ref_dist = float(np.mean(ref_dists)); ref_cost = float(np.mean(ref_costs))
+                rl_dist  = float(np.mean(rl_dists));  rl_cost  = float(np.mean(rl_costs))
                 done_str = f"{np.mean(dones):.0%}"
 
             print(f"{model:12s} {seed:4d} {total_p:7d} {pqc_p:6d} "
-                  f"{ref_dist:9.4f} {rl_dist:9.4f} {gap:7.2f}% {done_str:4s}")
+                  f"{ref_cost:9.4f} {rl_cost:9.4f} {ref_dist:9.4f} {rl_dist:9.4f} "
+                  f"{gap:7.2f}% {done_str:4s}")
 
             rows.append({
                 "model":        model,
@@ -411,6 +426,8 @@ def analyze(
                 "seed":         seed,
                 "total_params": total_p,
                 "pqc_params":   pqc_p,
+                "ref_cost":     round(ref_cost, 6),
+                "rl_cost":      round(rl_cost, 6),
                 "ref_dist":     round(ref_dist, 6),
                 "rl_dist":      round(rl_dist, 6),
                 "gap_pct":      round(gap, 4),
