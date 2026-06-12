@@ -24,7 +24,7 @@ Two PQC Q-networks for CPDPTW and a parameter-matched classical baseline.
 Sensitivity knobs
 -----------------
 QuantumQNetwork accepts:
-  entanglement : "ring" | "brick" | "all" | "star"
+  entanglement : "none" | "ring" | "brick" | "all" | "star"
   encoding     : "ry"   | "rz"   | "ryrz"
   h_init       : True (H|0> superposition) | False (|0> computational basis)
 
@@ -108,6 +108,9 @@ def _ent_pairs(n_qubits: int, topology: str, layer: int = 0) -> list[tuple[int, 
     """
     Return (control, target) pairs for CNOT entanglement in one circuit layer.
 
+    none  -- no entanglement (product state); ablation baseline.
+             If performance matches ring/brick/star, entanglement contributes
+             nothing and the classical compressor drives all expressivity.
     ring  -- each qubit to its right neighbour with wraparound; O(n) gates.
              Most common in hardware-efficient ansatz literature.
     brick -- alternating even/odd qubit pairs per layer; O(n) gates, avoids
@@ -118,7 +121,9 @@ def _ent_pairs(n_qubits: int, topology: str, layer: int = 0) -> list[tuple[int, 
     star  -- qubit 0 (depot proxy) connects to all others; O(n) gates,
              matches the depot-centric topology of the routing graph.
     """
-    if topology == "ring":
+    if topology == "none":
+        return []
+    elif topology == "ring":
         return [(q, (q + 1) % n_qubits) for q in range(n_qubits)]
     elif topology == "brick":
         offset = layer % 2
@@ -130,7 +135,7 @@ def _ent_pairs(n_qubits: int, topology: str, layer: int = 0) -> list[tuple[int, 
     else:
         raise ValueError(
             f"Unknown entanglement topology '{topology}'. "
-            f"Choose from: ring, brick, all, star"
+            f"Choose from: none, ring, brick, all, star"
         )
 
 
@@ -148,7 +153,7 @@ class QuantumQNetwork(nn.Module):
                       ->  linear head (2*n_qubits -> n_actions)
 
     Sensitivity parameters (all keyword-only):
-        entanglement : str  -- "ring" (default) | "brick" | "all" | "star"
+        entanglement : str  -- "none" | "ring" (default) | "brick" | "all" | "star"
         encoding     : str  -- "ry" (default) | "rz" | "ryrz"
         h_init       : bool -- True (default, H superposition) | False (|0> start)
     """
@@ -510,7 +515,7 @@ class QuantumNodeQNetwork(nn.Module):
 
     Sensitivity parameters:
         n_layers     : int   -- circuit depth
-        entanglement : str   -- ring | brick | all | star
+        entanglement : str   -- none | ring | brick | all | star
         encoding     : str   -- ry (1 angle/qubit) | ryrz (2 angles/qubit)
         h_init       : bool  -- H superposition vs |0> start
     """

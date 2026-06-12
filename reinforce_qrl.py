@@ -341,7 +341,7 @@ if __name__ == "__main__":
                    help="Save a checkpoint every N episodes (0 = disable).")
     p.add_argument("--encoding", choices=["ry", "rz", "ryrz"], default="ry",
                    help="Qubit encoding strategy (default: ry).")
-    p.add_argument("--entanglement", choices=["ring", "brick", "all", "star"],
+    p.add_argument("--entanglement", choices=["none", "ring", "brick", "all", "star"],
                    default="ring", help="Entanglement topology (default: ring).")
     args = p.parse_args()
 

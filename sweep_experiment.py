@@ -305,7 +305,7 @@ if __name__ == "__main__":
     ap.add_argument("--out",      default="sweep_results.csv",
                     help="Output CSV path")
     ap.add_argument("--topologies", type=str, nargs="+", default=DEFAULT_TOPOLOGIES,
-                    choices=["ring", "brick", "all", "star"],
+                    choices=["none", "ring", "brick", "all", "star"],
                     help="Entanglement topologies to sweep (default: ring)")
     ap.add_argument("--n-jobs",   type=int, default=1,
                     help="Parallel workers (default: 1 = sequential). "
