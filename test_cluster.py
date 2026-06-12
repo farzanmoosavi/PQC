@@ -383,7 +383,7 @@ def test_reference_solver():
     assert route[0] == 0 and route[-1] == 0, "route must start and end at depot"
     assert dist > 0 and np.isfinite(dist), f"bad dist: {dist}"
     _, _, _, label = reference_solve(env)
-    assert label == "exact-dfs", f"wrong solver for n=3: {label}"
+    assert label == "exact-B&B", f"wrong solver for n=3: {label}"
     return f"route_len={len(route)}  dist={dist:.4f}  solver={label}"
 
 
@@ -393,9 +393,9 @@ def test_random_baseline():
     from gap_analysis import eval_random_policy
     env = CPDPTWEnv(node=3, vehicle_capacity=5, rng_seed=0)
     env.reset(regenerate=True)
-    dist, done = eval_random_policy(env, n_trials=5)
+    dist, cost, done = eval_random_policy(env, n_trials=5)
     assert dist > 0 and np.isfinite(dist), f"bad dist: {dist}"
-    return f"mean_dist={dist:.4f}  done={done}"
+    return f"mean_dist={dist:.4f}  mean_cost={cost:.4f}  done={done}"
 
 
 def test_gap_analysis_end_to_end():
@@ -507,7 +507,7 @@ def main():
         check("enc_scales receive gradients", test_reinforce_gradients)
 
     print("\n[ gap analysis ]")
-    check("reference solver (exact-DFS n=3)", test_reference_solver)
+    check("reference solver (exact-B&B n=3)", test_reference_solver)
     check("random policy baseline",           test_random_baseline)
     if not args.quick:
         check("gap analysis end-to-end",      test_gap_analysis_end_to_end)
