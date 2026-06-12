@@ -122,7 +122,7 @@ def run_one(
     total_params = params["total"]
 
     if model_kind in quantum_models:
-        pqc_params  = params.get("pqc", 0)
+        pqc_params  = params.get("pqc_var", 0)   # quantum models report "pqc_var"
         head_params = params.get("head", 0)
         # compact models use "compressor"; node models use "node_encoder"
         comp_params = params.get("compressor", 0) or params.get("node_encoder", 0)

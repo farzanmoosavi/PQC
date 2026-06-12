@@ -261,7 +261,7 @@ fi
 if [ "$RUNG" = "D" ]; then
     echo "=== Rung D: hyperparameter sweep ==="
     python3 -u sweep_experiment.py \
-        --node "$NODE" --episodes "$EPISODES" \
+        --node 3 4 --episodes "${EPISODES:-150}" \
         --n-jobs "$SLURM_CPUS_PER_TASK" \
         --out "$OUT_DIR/sweep.csv" \
         2>&1 | tee "$OUT_DIR/sweep.log"
