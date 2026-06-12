@@ -19,6 +19,7 @@
 #   sbatch --export=RUNG=F submit.sh              # Rung F: barren plateau gradient-variance
 #   sbatch --export=RUNG=G submit.sh              # Rung G: topology × depth sensitivity
 #   sbatch --export=RUNG=H submit.sh              # Rung H: critic ablation (REINFORCE vs AC)
+#   sbatch --export=RUNG=I submit.sh              # Rung I: PPO fixed-instance + policy-learning
 #   sbatch --export=RUNG=T submit.sh              # Rung T: smoke-test only
 #   sbatch --export=RUNG=A,EPISODES=500 submit.sh
 #   sbatch --export=RUNG=B,SEEDS="0 1 2 3 4" submit.sh
@@ -26,6 +27,7 @@
 # Recommended wall times (override default 24h with --time=HH:MM:SS):
 #   T  0:20:00    A  20:00:00    B  16:00:00    C  16:00:00
 #   D  8:00:00    E  22:00:00    F  1:00:00     G  8:00:00    H  20:00:00
+#   I  20:00:00
 # Example: sbatch --time=1:00:00 --export=RUNG=F submit.sh
 # ============================================================
 
@@ -117,6 +119,7 @@ FRESH="${FRESH:-0}"
 
 DQN_MODELS="quantum qaoa classical"
 PG_MODELS="quantum qaoa node-quantum node-qaoa classical"
+PPO_MODELS="quantum qaoa node-quantum node-qaoa classical classical-large"
 
 OUT_DIR="results/rung${RUNG}_$(date +%Y%m%d_%H%M)"
 mkdir -p "$OUT_DIR"
@@ -445,6 +448,98 @@ if [ "$RUNG" = "H" ]; then
     aggregate "$OUT_DIR/h_nocritic" "$H_MODELS" "$OUT_DIR/summary_nocritic.csv"
     aggregate "$OUT_DIR/h_critic"   "$H_MODELS" "$OUT_DIR/summary_critic.csv"
     echo "=== Rung H done: $(date) ==="
+fi
+
+# ============================================================
+# Rung I — PPO: fixed-instance + policy-learning
+#
+# PPO replaces per-episode REINFORCE with multi-epoch updates on a
+# buffer of 10 complete episodes, using GAE(lambda=0.95) advantages and
+# a clipped surrogate objective (eps=0.2).  This prevents the large
+# single-step gradient updates that destabilise PQC training.
+#
+# Includes classical-large (hidden=max(32,F)) as the properly-sized
+# classical baseline to test quantum parameter efficiency:
+#   node-quantum (~294 params) vs classical-large (~2900 params).
+#
+# Two sub-experiments:
+#   fixed : fixed instance — convergence speed vs DQN / REINFORCE
+#   policy: new instance each episode — generalisation with less data
+#
+# Runtime: ~18h on 32 CPUs (6 models × 7 seeds × 2 modes × 300 eps).
+# ============================================================
+if [ "$RUNG" = "I" ]; then
+    echo "=== Rung I: PPO fixed-instance + policy-learning ==="
+
+    declare -A I_EPS=( [3]=300 [4]=200 )
+
+    for N_SIZE in 3 4; do
+        NQ=$(( 2 * N_SIZE + 1 ))
+        EPS_I=${I_EPS[$N_SIZE]}
+        echo "--- n=$N_SIZE  qubits=$NQ  episodes=$EPS_I ---"
+
+        # Fixed instance: convergence comparison vs DQN / REINFORCE
+        for MODEL in $PPO_MODELS; do
+            for SEED in $SEEDS; do
+                run_bg "i_n${N_SIZE}_fixed_${MODEL}_s${SEED}" ppo_qrl.py \
+                    --model "$MODEL" --node "$N_SIZE" --capacity "$CAPACITY" \
+                    --episodes "$EPS_I" \
+                    --n-qubits "$NQ" --n-layers "$N_LAYERS" \
+                    --lr "$LR" --entropy "$ENTROPY" --encoding "$ENCODING" \
+                    --seed "$SEED" --fixed-instance \
+                    --out-prefix "$OUT_DIR/i_n${N_SIZE}_fixed"
+            done
+        done
+
+        # Policy learning: new instance each episode — key generalisation test
+        for MODEL in $PPO_MODELS; do
+            for SEED in $SEEDS; do
+                run_bg "i_n${N_SIZE}_policy_${MODEL}_s${SEED}" ppo_qrl.py \
+                    --model "$MODEL" --node "$N_SIZE" --capacity "$CAPACITY" \
+                    --episodes "$EPS_I" \
+                    --n-qubits "$NQ" --n-layers "$N_LAYERS" \
+                    --lr "$LR" --entropy "$ENTROPY" --encoding "$ENCODING" \
+                    --seed "$SEED" \
+                    --out-prefix "$OUT_DIR/i_n${N_SIZE}_policy"
+            done
+        done
+    done
+
+    wait_all
+
+    # Gap analysis before aggregate (needs .pt files intact)
+    for N_SIZE in 3 4; do
+        NQ=$(( 2 * N_SIZE + 1 ))
+        python3 -u gap_analysis.py \
+            --prefix  "$OUT_DIR/i_n${N_SIZE}_fixed" \
+            --models  $PPO_MODELS \
+            --seeds   $SEEDS \
+            --node    "$N_SIZE" --n-qubits "$NQ" --n-layers "$N_LAYERS" \
+            --encoding "$ENCODING" --mode fixed \
+            --out-csv "$OUT_DIR/gap_ppo_n${N_SIZE}_fixed.csv" \
+            >> "$OUT_DIR/gap_ppo_n${N_SIZE}.log" 2>&1
+
+        python3 -u gap_analysis.py \
+            --prefix  "$OUT_DIR/i_n${N_SIZE}_policy" \
+            --models  $PPO_MODELS \
+            --seeds   $SEEDS \
+            --node    "$N_SIZE" --n-qubits "$NQ" --n-layers "$N_LAYERS" \
+            --encoding "$ENCODING" --mode policy \
+            --out-csv "$OUT_DIR/gap_ppo_n${N_SIZE}_policy.csv" \
+            >> "$OUT_DIR/gap_ppo_n${N_SIZE}.log" 2>&1
+
+        echo "PPO gap CSVs for n=$N_SIZE -> $OUT_DIR/gap_ppo_n${N_SIZE}_*.csv"
+    done
+
+    # Aggregate with separate CSVs per sub-experiment
+    for N_SIZE in 3 4; do
+        aggregate "$OUT_DIR/i_n${N_SIZE}_fixed"  "$PPO_MODELS" \
+                  "$OUT_DIR/summary_ppo_n${N_SIZE}_fixed.csv"
+        aggregate "$OUT_DIR/i_n${N_SIZE}_policy" "$PPO_MODELS" \
+                  "$OUT_DIR/summary_ppo_n${N_SIZE}_policy.csv"
+    done
+
+    echo "=== Rung I done: $(date) ==="
 fi
 
 # ============================================================
