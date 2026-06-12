@@ -150,12 +150,14 @@ wait_all() {
 }
 
 aggregate() {
-    local prefix="$1" models="$2"
+    # aggregate <prefix> <models> [out_csv]
+    # Default out_csv = $OUT_DIR/summary.csv
+    local prefix="$1" models="$2" out="${3:-$OUT_DIR/summary.csv}"
     python3 -u aggregate_results.py \
         --prefix  "$prefix" \
         --models  "$models" \
         --seeds   "$SEEDS" \
-        --out-csv "$OUT_DIR/summary.csv" \
+        --out-csv "$out" \
         --delete-seeds \
         >> "$OUT_DIR/aggregate.log" 2>&1
 }
@@ -325,11 +327,10 @@ if [ "$RUNG" = "E" ]; then
 
     wait_all
 
-    # Aggregate + gap analysis for every sub-experiment
+    # Gap analysis FIRST — needs .pt checkpoints before aggregate deletes them
     for N_SIZE in 3 4; do
         NQ=$(( 2 * N_SIZE + 1 ))
         for ENC in ry ryrz; do
-            aggregate "$OUT_DIR/e_n${N_SIZE}_${ENC}_fixed" "$PG_MODELS"
             python3 -u gap_analysis.py \
                 --prefix   "$OUT_DIR/e_n${N_SIZE}_${ENC}_fixed" \
                 --models   $PG_MODELS \
@@ -340,7 +341,6 @@ if [ "$RUNG" = "E" ]; then
                 >> "$OUT_DIR/gap_n${N_SIZE}.log" 2>&1
         done
 
-        aggregate "$OUT_DIR/e_n${N_SIZE}_ry_policy" "$PG_MODELS"
         python3 -u gap_analysis.py \
             --prefix   "$OUT_DIR/e_n${N_SIZE}_ry_policy" \
             --models   $PG_MODELS \
@@ -351,6 +351,16 @@ if [ "$RUNG" = "E" ]; then
             >> "$OUT_DIR/gap_n${N_SIZE}.log" 2>&1
 
         echo "Gap CSVs for n=$N_SIZE -> $OUT_DIR/gap_n${N_SIZE}_*.csv"
+    done
+
+    # Aggregate AFTER gap analysis (--delete-seeds removes per-seed .pt files)
+    for N_SIZE in 3 4; do
+        for ENC in ry ryrz; do
+            aggregate "$OUT_DIR/e_n${N_SIZE}_${ENC}_fixed" "$PG_MODELS" \
+                      "$OUT_DIR/summary_n${N_SIZE}_${ENC}_fixed.csv"
+        done
+        aggregate "$OUT_DIR/e_n${N_SIZE}_ry_policy" "$PG_MODELS" \
+                  "$OUT_DIR/summary_n${N_SIZE}_ry_policy.csv"
     done
 
     echo "=== Rung E done: $(date) ==="
@@ -432,8 +442,8 @@ if [ "$RUNG" = "H" ]; then
     done
 
     wait_all
-    aggregate "$OUT_DIR/h_nocritic" "$H_MODELS"
-    aggregate "$OUT_DIR/h_critic"   "$H_MODELS"
+    aggregate "$OUT_DIR/h_nocritic" "$H_MODELS" "$OUT_DIR/summary_nocritic.csv"
+    aggregate "$OUT_DIR/h_critic"   "$H_MODELS" "$OUT_DIR/summary_critic.csv"
     echo "=== Rung H done: $(date) ==="
 fi
 
