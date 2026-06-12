@@ -2,7 +2,8 @@
 gap_analysis.py — Chapter 6 optimality gap and parameter efficiency analysis.
 
 Compares trained RL policies against a reference solver:
-  n <= 5  →  exact DFS (provably optimal, ~1-5s per instance)
+  n <= 5  →  exact distance-optimal DFS (minimises pure travel distance,
+             provably optimal, ~1-5 ms per instance).  gap_pct >= 0 guaranteed.
   n >  5  →  greedy nearest-neighbour (near-optimal upper bound)
 
 Two evaluation modes
@@ -77,6 +78,46 @@ def _route_dist_cost(route: list[int], env: CPDPTWEnv) -> tuple[float, float]:
             pen += env.late_w * (vtime - close_t) ** 2
         total_cost += d / env.dist_scale + pen
     return total_dist, total_cost
+
+
+def exact_solve_dist(env: CPDPTWEnv) -> tuple[list[int], float]:
+    """
+    Exact branch-and-bound minimising pure travel distance (no time-penalty term).
+    Enforces precedence + capacity; ignores time windows in the objective so the
+    reference is distance-pure and gap_pct >= 0 is guaranteed.
+    Provably distance-optimal for n <= 5 (milliseconds per instance).
+    Returns (route, total_dist).
+    """
+    n = env.node
+    dm = env.dist_matrix.numpy()
+    demands = env.demands
+
+    best_dist = [float('inf')]
+    best_route: list = [[]]
+
+    def dfs(node: int, vmask: int, load: int, dist_acc: float, route: list):
+        if dist_acc >= best_dist[0]:          # distance bound-and-prune
+            return
+        if len(route) == 2 * n + 1:
+            ret_d = float(dm[node, 0])
+            total = dist_acc + ret_d
+            if total < best_dist[0]:
+                best_dist[0] = total
+                best_route[0] = route + [0]
+            return
+        for nxt in range(1, 2 * n + 1):
+            if vmask & (1 << nxt):
+                continue
+            if nxt > n and not (vmask & (1 << (nxt - n))):
+                continue
+            new_load = load + int(demands[nxt])
+            if new_load > env.capacity or new_load < 0:
+                continue
+            d = float(dm[node, nxt])
+            dfs(nxt, vmask | (1 << nxt), new_load, dist_acc + d, route + [nxt])
+
+    dfs(0, 1, 0, 0.0, [0])
+    return best_route[0], best_dist[0]
 
 
 def exact_solve(env: CPDPTWEnv, timeout: float = 120.0) -> tuple[list[int], float, float]:
@@ -167,8 +208,12 @@ def greedy_solve(env: CPDPTWEnv) -> tuple[list[int], float, float]:
 
 def reference_solve(env: CPDPTWEnv) -> tuple[list[int], float, float, str]:
     if env.node <= 5:
-        r, d, c = exact_solve(env)
-        return r, d, c, "exact-dfs"
+        # Distance-optimal exact solver: minimises pure travel distance.
+        # gap_pct = (rl_dist - ref_dist) / ref_dist >= 0 is guaranteed because
+        # no feasible route can be shorter than the distance-optimal solution.
+        route, dist = exact_solve_dist(env)
+        _, cost = _route_dist_cost(route, env)
+        return route, dist, cost, "exact-dist-opt"
     r, d, c = greedy_solve(env)
     return r, d, c, "greedy-nn"
 
