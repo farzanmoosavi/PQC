@@ -349,6 +349,8 @@ def plot_results(csv_path: str) -> None:
         print("matplotlib/pandas not available -- skipping plots.")
         return
 
+    import os as _os
+    _plot_dir = _os.path.dirname(_os.path.abspath(csv_path))
     df = pd.read_csv(csv_path)
 
     # Plot 1: Var vs n_qubits
@@ -365,8 +367,9 @@ def plot_results(csv_path: str) -> None:
         ax.set_title(f"Barren plateau: Var vs n_qubits  (L={FIXED_DEPTH})")
         ax.legend()
         fig.tight_layout()
-        fig.savefig("bp_qubits.png", dpi=150)
-        print("Saved bp_qubits.png")
+        _p = _os.path.join(_plot_dir, "bp_qubits.png")
+        fig.savefig(_p, dpi=150)
+        print(f"Saved {_p}")
 
     # Plot 2: Var vs n_layers
     ldf = df[(df["n_qubits"] == FIXED_WIDTH) &
@@ -382,8 +385,9 @@ def plot_results(csv_path: str) -> None:
         ax.set_title(f"Barren plateau: Var vs n_layers  (nq={FIXED_WIDTH})")
         ax.legend()
         fig.tight_layout()
-        fig.savefig("bp_layers.png", dpi=150)
-        print("Saved bp_layers.png")
+        _p = _os.path.join(_plot_dir, "bp_layers.png")
+        fig.savefig(_p, dpi=150)
+        print(f"Saved {_p}")
 
     plt.close("all")
 

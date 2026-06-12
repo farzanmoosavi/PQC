@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import os
 import time
 from typing import Any
 
@@ -74,9 +75,9 @@ def qubit_sizes(node: int) -> list[int]:
 
 def _run_one_task(args: tuple) -> dict:
     """Called by ProcessPoolExecutor workers — must live at module level."""
-    model, node, nq, nl, seed, episodes, topo = args
+    model, node, nq, nl, seed, episodes, topo, out_dir = args
     try:
-        return run_one(model, node, nq, nl, seed, episodes, entanglement=topo)
+        return run_one(model, node, nq, nl, seed, episodes, entanglement=topo, out_dir=out_dir)
     except Exception as exc:
         return {"model": model, "node": node, "n_qubits": nq,
                 "n_layers": nl, "seed": seed, "entanglement": topo,
@@ -96,6 +97,7 @@ def run_one(
     episodes: int,
     capacity: int = 5,
     entanglement: str = "ring",
+    out_dir: str = ".",
 ) -> dict[str, Any]:
     """
     Train one (model, qubit_count, layers, seed, entanglement) configuration.
@@ -103,7 +105,7 @@ def run_one(
     """
     from train_qrl import train
 
-    out_prefix = f"sweep_n{node}_q{n_qubits}_l{n_layers}_{entanglement}_s{seed}"
+    out_prefix = os.path.join(out_dir, f"sweep_n{node}_q{n_qubits}_l{n_layers}_{entanglement}_s{seed}")
     t0 = time.perf_counter()
 
     quantum_models = ("quantum", "qaoa", "node-quantum", "node-qaoa")
@@ -193,6 +195,9 @@ def sweep(
     out_csv:    str       = "sweep_results.csv",
     n_jobs:     int       = 1,
 ) -> list[dict]:
+    out_dir = os.path.dirname(os.path.abspath(out_csv))
+    os.makedirs(out_dir, exist_ok=True)
+
     _node_models     = {"node-quantum", "node-qaoa"}
     # classical-large ignores n_qubits (uses hidden=max(32,F)); only run once
     # per (node, layers, seed, topo) to avoid wasting walltime on duplicates.
@@ -248,7 +253,7 @@ def sweep(
         for i, (model, node, nq, nl, seed, topo) in enumerate(valid, 1):
             print(f"[{i:3d}/{total}]  {model:9s}  n={node}  q={nq}  l={nl}  seed={seed}  topo={topo}")
             try:
-                row = run_one(model, node, nq, nl, seed, episodes, entanglement=topo)
+                row = run_one(model, node, nq, nl, seed, episodes, entanglement=topo, out_dir=out_dir)
             except Exception as exc:
                 print(f"  ERROR: {exc}")
                 row = {"model": model, "node": node, "n_qubits": nq,
@@ -259,14 +264,14 @@ def sweep(
             _save(rows, fieldnames)
     else:
         from concurrent.futures import ProcessPoolExecutor, as_completed
-        tasks = [(model, node, nq, nl, seed, episodes, topo) for (model, node, nq, nl, seed, topo) in valid]
+        tasks = [(model, node, nq, nl, seed, episodes, topo, out_dir) for (model, node, nq, nl, seed, topo) in valid]
         print(f"Launching {total} configs across {n_jobs} workers ...")
         with ProcessPoolExecutor(max_workers=n_jobs) as ex:
             future_map = {ex.submit(_run_one_task, t): t for t in tasks}
             done = 0
             for fut in as_completed(future_map):
                 done += 1
-                model, node, nq, nl, seed, _, topo = future_map[fut]
+                model, node, nq, nl, seed, _, topo, _ = future_map[fut]
                 row = fut.result()
                 rows.append(row)
                 if not fieldnames and "error" not in row:
