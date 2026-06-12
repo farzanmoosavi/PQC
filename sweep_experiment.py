@@ -193,9 +193,12 @@ def sweep(
     out_csv:    str       = "sweep_results.csv",
     n_jobs:     int       = 1,
 ) -> list[dict]:
-    _node_models = {"node-quantum", "node-qaoa"}
+    _node_models     = {"node-quantum", "node-qaoa"}
+    # classical-large ignores n_qubits (uses hidden=max(32,F)); only run once
+    # per (node, layers, seed, topo) to avoid wasting walltime on duplicates.
+    _qubit_free_models = {"classical-large"}
 
-    # Build full config list; filter node-model redundancies upfront.
+    # Build full config list; filter redundancies upfront.
     all_configs = [
         (model, node, nq, nl, s, topo)
         for node  in nodes
@@ -205,10 +208,18 @@ def sweep(
         for model in models
         for topo  in topologies
     ]
-    valid = [
-        c for c in all_configs
-        if not (c[0] in _node_models and c[2] != natural_qubits(c[1]))
-    ]
+    seen_qubit_free: set = set()
+    valid = []
+    for c in all_configs:
+        model, node, nq, nl, s, topo = c
+        if model in _node_models and nq != natural_qubits(node):
+            continue
+        if model in _qubit_free_models:
+            key = (model, node, nl, s, topo)
+            if key in seen_qubit_free:
+                continue
+            seen_qubit_free.add(key)
+        valid.append(c)
     total   = len(valid)
     skipped = len(all_configs) - total
 

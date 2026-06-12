@@ -515,7 +515,7 @@ class QuantumNodeQNetwork(nn.Module):
     <Z_i Z_j> represent the physical node-pair interaction.
 
     Classical parameters:
-        shared node encoder: 11*n_out + n_out = 12*n_out  (12 or 24 total)
+        shared node encoder: Linear(11,8)+bias + Linear(8,n_out)+bias = 96 + 9*n_out  (105 or 114)
         head:                 2*n_qubits * n_actions + n_actions
 
     The classical overhead is ~18x smaller than the compact compressor

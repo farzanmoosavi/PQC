@@ -321,7 +321,7 @@ def analyze(
                 env.reset(regenerate=True)
                 net = build_net(model, env, n_qubits=n_qubits, n_layers=n_layers,
                                 encoding=encoding)
-                net.load_state_dict(torch.load(ckpt, map_location='cpu'))
+                net.load_state_dict(torch.load(ckpt, map_location='cpu', weights_only=True))
                 net.eval()
             except Exception as e:
                 print(f"{model:12s} {seed:4d}  -- error: {e}")
@@ -449,7 +449,7 @@ if __name__ == "__main__":
     ap.add_argument("--models",    nargs="+",
                     default=["quantum", "qaoa", "node-quantum", "node-qaoa", "classical"],
                     choices=["quantum", "qaoa", "node-quantum", "node-qaoa",
-                             "classical", "classical-qaoa", "random"])
+                             "classical", "classical-qaoa", "classical-large", "random"])
     ap.add_argument("--seeds",     type=int, nargs="+", default=list(range(7)))
     ap.add_argument("--node",      type=int, default=4)
     ap.add_argument("--n-qubits",  type=int, default=9)

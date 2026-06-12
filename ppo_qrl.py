@@ -76,16 +76,18 @@ class ValueHead(nn.Module):
 
 @dataclass
 class RolloutBuffer:
-    states:       List[torch.Tensor] = field(default_factory=list)
-    actions:      List[int]          = field(default_factory=list)
-    log_probs:    List[torch.Tensor] = field(default_factory=list)
-    rewards:      List[float]        = field(default_factory=list)
-    values:       List[torch.Tensor] = field(default_factory=list)
-    dones:        List[bool]         = field(default_factory=list)
+    states:    List[torch.Tensor] = field(default_factory=list)
+    actions:   List[int]          = field(default_factory=list)
+    log_probs: List[torch.Tensor] = field(default_factory=list)
+    rewards:   List[float]        = field(default_factory=list)
+    values:    List[torch.Tensor] = field(default_factory=list)
+    dones:     List[bool]         = field(default_factory=list)
+    masks:     List[torch.Tensor] = field(default_factory=list)  # stored for re-eval masking
 
     def clear(self):
         self.states.clear(); self.actions.clear(); self.log_probs.clear()
         self.rewards.clear(); self.values.clear(); self.dones.clear()
+        self.masks.clear()
 
     def __len__(self):
         return len(self.rewards)
@@ -99,27 +101,38 @@ def _masked_categorical(logits: torch.Tensor, mask: torch.Tensor):
 
 
 def _compute_gae(
-    rewards: List[float],
-    values:  List[torch.Tensor],
-    dones:   List[bool],
-    gamma:   float,
-    lam:     float,
-    device:  torch.device,
+    rewards:    List[float],
+    values:     List[torch.Tensor],
+    dones:      List[bool],
+    gamma:      float,
+    lam:        float,
+    device:     torch.device,
+    last_value: float = 0.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Generalised Advantage Estimation (Schulman et al. 2016).
     Returns advantages and discounted returns, both shape (T,).
+
+    last_value: critic estimate of the state AFTER the final buffer step.
+    Pass 0.0 for terminal episodes; pass V(s_T) for truncated ones so
+    advantages are not under-estimated at the buffer boundary.
     """
     T = len(rewards)
-    adv   = torch.zeros(T, device=device)
-    ret   = torch.zeros(T, device=device)
-    vals  = torch.stack(values).detach().to(device)   # (T,)
+    adv  = torch.zeros(T, device=device)
+    ret  = torch.zeros(T, device=device)
+    vals = torch.stack(values).detach().to(device)   # (T,)
 
     gae = 0.0
     for t in reversed(range(T)):
-        next_val = 0.0 if dones[t] else (vals[t + 1].item() if t + 1 < T else 0.0)
-        delta = rewards[t] + gamma * next_val - vals[t].item()
-        gae   = delta + gamma * lam * (0.0 if dones[t] else gae)
+        if dones[t]:
+            next_val = 0.0
+            gae      = 0.0
+        elif t + 1 < T:
+            next_val = vals[t + 1].item()
+        else:
+            next_val = last_value   # truncated episode: bootstrap from critic
+        delta  = rewards[t] + gamma * next_val - vals[t].item()
+        gae    = delta + gamma * lam * gae
         adv[t] = gae
         ret[t] = gae + vals[t].item()
 
@@ -195,6 +208,8 @@ def train_ppo(
         ep_dists_batch:   List[float] = []
         ep_complete_batch: List[float] = []
 
+        last_next_state = None   # tracks last observed s' for truncated bootstrap
+
         for _ in range(episodes_per_update):
             if ep >= episodes:
                 break
@@ -203,6 +218,7 @@ def train_ppo(
             state, _ = env.reset(regenerate=not fixed_instance)
             state = state.to(device)
             ep_rewards: List[float] = []
+            ep_start_idx = len(buffer.rewards)   # guard incompletion penalty
 
             for _ in range(4 * env.n_total):
                 mask = env.action_mask().to(device)
@@ -216,27 +232,31 @@ def train_ppo(
                 dist   = _masked_categorical(logits, mask)
                 action = dist.sample()
 
-                buffer.states.append(state.squeeze(0) if state.dim() > 1 else state)
+                s = state.squeeze(0) if state.dim() > 1 else state
+                buffer.states.append(s)
                 buffer.actions.append(action.item())
                 buffer.log_probs.append(dist.log_prob(action).detach())
                 buffer.values.append(val.detach())
+                buffer.masks.append(mask.cpu())
 
                 nxt, reward, done, _, _ = env.step(action.item())
                 ep_rewards.append(reward.item())
                 buffer.rewards.append(reward.item())
                 buffer.dones.append(done)
+                last_next_state = nxt.to(device)
 
                 if done:
+                    last_next_state = None   # terminal: no bootstrap needed
                     break
                 state = nxt.to(device)
 
-            # Incompletion penalty — same as reinforce_qrl
+            # Incompletion penalty — only modify THIS episode's last step
             if not env.visited[1:].all():
                 unvisited = int((~env.visited[1:]).sum().item())
                 pen = -5.0 * unvisited
                 ep_rewards.append(pen)
-                if buffer.rewards:
-                    buffer.rewards[-1] += pen   # tack onto last step
+                if len(buffer.rewards) > ep_start_idx:
+                    buffer.rewards[-1] += pen
 
             ep_rewards_batch.append(sum(ep_rewards))
             ep_dists_batch.append(env.total_distance)
@@ -248,23 +268,33 @@ def train_ppo(
         # ------------------------------------------------------------------ #
         # Phase 2: compute GAE advantages for the whole buffer
         # ------------------------------------------------------------------ #
+        # Bootstrap the final truncated episode if it didn't end with done=True
+        last_val = 0.0
+        if last_next_state is not None:
+            with torch.no_grad():
+                s = last_next_state.squeeze(0) if last_next_state.dim() > 1 \
+                    else last_next_state
+                last_val = critic(s.to(device)).item()
+
         advantages, returns = _compute_gae(
-            buffer.rewards, buffer.values, buffer.dones, gamma, gae_lambda, device
+            buffer.rewards, buffer.values, buffer.dones, gamma, gae_lambda, device,
+            last_value=last_val,
         )
 
-        states_t   = torch.stack(buffer.states).to(device)          # (T, F)
-        actions_t  = torch.tensor(buffer.actions, device=device)     # (T,)
-        logprob_old= torch.stack(buffer.log_probs).to(device)        # (T,)
+        states_t    = torch.stack(buffer.states).to(device)       # (T, F)
+        actions_t   = torch.tensor(buffer.actions, device=device)  # (T,)
+        logprob_old = torch.stack(buffer.log_probs).to(device)     # (T,)
+        masks_t     = torch.stack(buffer.masks).to(device)         # (T, n_actions)
 
         # ------------------------------------------------------------------ #
         # Phase 3: K epochs of minibatch PPO updates
         # ------------------------------------------------------------------ #
         T = len(buffer)
-        idx = torch.randperm(T)
         cur_ent = entropy_coef * max(0.1, 1.0 - ep / max(episodes - 1, 1))
         epoch_losses: List[float] = []
 
         for _ in range(n_epochs):
+            idx = torch.randperm(T)   # re-shuffle each epoch for decorrelation
             for start in range(0, T, minibatch_size):
                 mb = idx[start: start + minibatch_size]
 
@@ -273,13 +303,12 @@ def train_ppo(
                 mb_adv     = advantages[mb]
                 mb_ret     = returns[mb]
                 mb_lp_old  = logprob_old[mb]
+                mb_masks   = masks_t[mb]             # (B, n_actions)
 
-                # Re-evaluate policy and value on minibatch
-                logits_new = net(mb_states).squeeze(1)              # (B, A)
-                # Reconstruct mask from valid actions — use all-True since
-                # we're re-evaluating already-taken (feasible) actions.
-                # Entropy computed over full action space for regularisation.
-                dist_new   = torch.distributions.Categorical(logits=logits_new)
+                # Re-evaluate using the SAME masks as collection so the
+                # log-prob normalisation is consistent and the PPO ratio is valid.
+                logits_new = net(mb_states)                          # (B, A)
+                dist_new   = _masked_categorical(logits_new, mb_masks)
                 lp_new     = dist_new.log_prob(mb_actions)           # (B,)
                 entropy    = dist_new.entropy().mean()
 

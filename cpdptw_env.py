@@ -14,14 +14,16 @@ Node layout (indices):
 Precedence: delivery (i+n) is feasible only after pickup i has been visited.
 Capacity:   load must stay within [0, Q] at all times.
 
-State vector (returned by _get_state), shape (1, 4 + 6n):
+State vector (returned by _get_state), shape (1, 6 + 10n):
     [ load/Q,
       time/T,
       cur_x, cur_y,                       (current node coordinates in [0,1]^2)
       pickup_open[1..n]   / T,
       delivery_close[1..n]/ T,
       demand[1..2n]       / Q,
-      visited[1..2n]      (binary)  ]
+      visited[1..2n]      (binary),
+      node_x[0..2n],                      (all node x-coordinates)
+      node_y[0..2n]       ]               (all node y-coordinates)
 
 Components cur_x/cur_y and visited[1..2n] were absent in the original design.
 Without visited flags the MDP state is non-Markov: two states with identical

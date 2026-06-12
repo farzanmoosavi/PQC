@@ -176,15 +176,17 @@ def test_forward_classical():
 
 
 def test_enc_scales_init():
-    """enc_scales must start at 1.0, not random."""
+    """enc_scales must start random in [-0.3, 0.3], not all 1.0."""
     from quantum_qnet import QuantumQNetwork, QAOAQNetwork
     env = _make_env()
     for cls in (QuantumQNetwork, QAOAQNetwork):
         net = cls(env, n_qubits=4, n_layers=2)
         val = net.qlayer.enc_scales
-        assert torch.allclose(val, torch.ones_like(val)), \
-            f"{cls.__name__} enc_scales not 1.0: {val}"
-    return "all enc_scales initialised to 1.0"
+        assert val.abs().max().item() <= 0.31, \
+            f"{cls.__name__} enc_scales out of range [-0.3,0.3]: {val}"
+        assert not torch.allclose(val, torch.ones_like(val)), \
+            f"{cls.__name__} enc_scales still all 1.0 — random init failed"
+    return "enc_scales initialised randomly in [-0.3, 0.3]"
 
 
 def test_pair_aware_features():

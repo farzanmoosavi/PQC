@@ -86,7 +86,11 @@ def aggregate(
         row["n_seeds"] = n_seeds_found
 
         if delete_seeds:
-            for s in seeds[1:]:
+            # Always keep seed "0" as the representative checkpoint regardless
+            # of seed list order; delete all others.
+            for s in seeds:
+                if str(s) == "0":
+                    continue
                 pt = f"{prefix}_{model}_s{s}.pt"
                 if os.path.exists(pt):
                     os.remove(pt)
