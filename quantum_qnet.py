@@ -187,12 +187,12 @@ class QuantumQNetwork(nn.Module):
 
         # ryrz encoding uses two rotation angles per qubit per layer.
         self.n_angles = 2 * self.n_qubits if encoding == "ryrz" else self.n_qubits
-        # GELU adds nonlinearity so the compressor can model feature interactions
-        # before encoding into qubit angles.  LayerNorm keeps activations bounded.
+        # GELU adds nonlinearity; Tanh maps to (-1,1) so × pi gives angles in
+        # (-pi, pi) with smooth coverage of the full Bloch sphere.
         self.compressor = nn.Sequential(
             nn.Linear(self.n_obs, self.n_angles),
             nn.GELU(),
-            nn.LayerNorm(self.n_angles),
+            nn.Tanh(),
         )
 
         # Circuit output: n_qubits <Z_i> + n_qubits <Z_i Z_{i+1}>.
@@ -260,7 +260,7 @@ class QuantumQNetwork(nn.Module):
         self.qlayer = qml.qnn.TorchLayer(circuit, weight_shapes)
         with torch.no_grad():
             self.qlayer.weights.normal_(0.0, 0.01)
-            self.qlayer.enc_scales.fill_(1.0)
+            self.qlayer.enc_scales.uniform_(-0.3, 0.3)
         self.head = nn.Linear(self.n_outputs, self.n_actions)
         self.to(self.device)
         self.qlayer.to('cpu')   # circuit always runs on CPU (Bug #6)
@@ -353,7 +353,7 @@ class QAOAQNetwork(nn.Module):
         self.compressor = nn.Sequential(
             nn.Linear(self.n_obs, self.n_angles),
             nn.GELU(),
-            nn.LayerNorm(self.n_angles),
+            nn.Tanh(),
         )
 
         enc_shape = (self.n_layers, self.n_qubits, 2) if encoding == "ryrz" \
@@ -402,7 +402,7 @@ class QAOAQNetwork(nn.Module):
         with torch.no_grad():
             self.qlayer.gamma.normal_(0.0, 0.01)
             self.qlayer.beta.normal_(0.0, 0.01)
-            self.qlayer.enc_scales.fill_(1.0)
+            self.qlayer.enc_scales.uniform_(-0.3, 0.3)
         self.head = nn.Linear(self.n_outputs, self.n_actions)
         self.to(self.device)
         self.qlayer.to('cpu')   # circuit always runs on CPU (Bug #6)
@@ -614,7 +614,7 @@ class QuantumNodeQNetwork(nn.Module):
         self.qlayer = qml.qnn.TorchLayer(circuit, weight_shapes)
         with torch.no_grad():
             self.qlayer.weights.normal_(0.0, 0.01)
-            self.qlayer.enc_scales.fill_(1.0)
+            self.qlayer.enc_scales.uniform_(-0.3, 0.3)
         self.head   = nn.Linear(self.n_outputs, self.n_actions)
         self.to(self.device)
         self.qlayer.to('cpu')   # circuit always runs on CPU; keep params there (Bug #6)
@@ -754,7 +754,7 @@ class QAOANodeQNetwork(nn.Module):
         with torch.no_grad():
             self.qlayer.gamma.normal_(0.0, 0.01)
             self.qlayer.beta.normal_(0.0, 0.01)
-            self.qlayer.enc_scales.fill_(1.0)
+            self.qlayer.enc_scales.uniform_(-0.3, 0.3)
         self.head = nn.Linear(self.n_outputs, self.n_actions)
         self.to(self.device)
         self.qlayer.to('cpu')   # circuit always runs on CPU (Bug #6)
