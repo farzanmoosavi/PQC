@@ -25,9 +25,9 @@
 #   sbatch --export=RUNG=B,SEEDS="0 1 2 3 4" submit.sh
 #
 # Recommended wall times (override default 24h with --time=HH:MM:SS):
-#   T  0:20:00    A  20:00:00    B  16:00:00    C  16:00:00
-#   D  8:00:00    E  22:00:00    F  1:00:00     G  8:00:00    H  20:00:00
-#   I  20:00:00
+#   T  0:20:00    A  24:00:00    B  22:00:00    C  24:00:00
+#   D  8:00:00    E  24:00:00    F  1:00:00     G  14:00:00   H  24:00:00
+#   I  24:00:00
 # Example: sbatch --time=1:00:00 --export=RUNG=F submit.sh
 # ============================================================
 
@@ -109,7 +109,7 @@ RUNG="${RUNG:-A}"
 NODE="${NODE:-5}"
 CAPACITY="${CAPACITY:-5}"
 EPISODES="${EPISODES:-1000}"
-SEEDS="${SEEDS:-0 1 2 3 4 5 6}"
+SEEDS="${SEEDS:-0 1 2 3 4 5 6 7 8 9 10 11}"   # 12 seeds — tighter confidence intervals
 N_QUBITS="${N_QUBITS:-9}"     # capped at 9 (≤10 qubits) to stay within 1-day wall time
 N_LAYERS="${N_LAYERS:-4}"
 LR="${LR:-5e-4}"
@@ -117,8 +117,8 @@ ENTROPY="${ENTROPY:-0.05}"
 ENCODING="${ENCODING:-ry}"    # qubit encoding: ry | rz | ryrz
 FRESH="${FRESH:-0}"
 
-DQN_MODELS="quantum qaoa classical"
-PG_MODELS="quantum qaoa node-quantum node-qaoa classical"
+DQN_MODELS="quantum qaoa node-quantum node-qaoa classical classical-large"
+PG_MODELS="quantum qaoa node-quantum node-qaoa classical classical-large"
 PPO_MODELS="quantum qaoa node-quantum node-qaoa classical classical-large"
 
 OUT_DIR="results/rung${RUNG}_$(date +%Y%m%d_%H%M)"
@@ -186,21 +186,32 @@ echo "--- smoke test passed ---"
 # Rung A — DQN, fixed instance
 # ============================================================
 if [ "$RUNG" = "A" ]; then
-    echo "=== Rung A: DQN fixed-instance ==="
-    [ "$FRESH" = "1" ] && rm -f "$OUT_DIR"/../rungA_*/*.pt "$OUT_DIR"/../rungA_*/*.txt 2>/dev/null
+    echo "=== Rung A: DQN fixed-instance (n=4 and n=5, all models) ==="
 
-    for MODEL in $DQN_MODELS; do
-        for SEED in $SEEDS; do
-            run_bg "${MODEL}_s${SEED}" train_qrl.py \
-                --model "$MODEL" --node "$NODE" --capacity "$CAPACITY" \
-                --episodes "$EPISODES" --n-qubits "$N_QUBITS" --n-layers "$N_LAYERS" \
-                --seed "$SEED" --fixed-instance --encoding "$ENCODING" \
-                --out-prefix "$OUT_DIR/dqn"
+    for N_SIZE in 4 5; do
+        NQ_NAT=$(( 2 * N_SIZE + 1 ))   # natural qubit count (node models always use this)
+        echo "--- n=$N_SIZE  natural_qubits=$NQ_NAT ---"
+        for MODEL in $DQN_MODELS; do
+            # flat models: cap at N_QUBITS to avoid 11-qubit slowdown at n=5
+            case "$MODEL" in
+                node-*) MODEL_NQ=$NQ_NAT ;;
+                *)       MODEL_NQ=$N_QUBITS ;;
+            esac
+            for SEED in $SEEDS; do
+                run_bg "a_n${N_SIZE}_${MODEL}_s${SEED}" train_qrl.py \
+                    --model "$MODEL" --node "$N_SIZE" --capacity "$CAPACITY" \
+                    --episodes "$EPISODES" --n-qubits "$MODEL_NQ" --n-layers "$N_LAYERS" \
+                    --seed "$SEED" --fixed-instance --encoding "$ENCODING" \
+                    --out-prefix "$OUT_DIR/dqn_n${N_SIZE}"
+            done
         done
     done
 
     wait_all
-    aggregate "$OUT_DIR/dqn" "$DQN_MODELS"
+    for N_SIZE in 4 5; do
+        aggregate "$OUT_DIR/dqn_n${N_SIZE}" "$DQN_MODELS" \
+                  "$OUT_DIR/summary_dqn_n${N_SIZE}.csv"
+    done
     echo "=== Rung A done: $(date) ==="
 fi
 
@@ -208,21 +219,26 @@ fi
 # Rung B — REINFORCE, fixed instance
 # ============================================================
 if [ "$RUNG" = "B" ]; then
-    echo "=== Rung B: REINFORCE fixed-instance ==="
-    [ "$FRESH" = "1" ] && rm -f "$OUT_DIR"/../rungB_*/*.pt "$OUT_DIR"/../rungB_*/*.txt 2>/dev/null
+    echo "=== Rung B: REINFORCE fixed-instance (ry + ryrz encodings) ==="
 
-    for MODEL in $PG_MODELS; do
-        for SEED in $SEEDS; do
-            run_bg "${MODEL}_s${SEED}" reinforce_qrl.py \
-                --model "$MODEL" --node "$NODE" --capacity "$CAPACITY" \
-                --episodes "$EPISODES" --n-qubits "$N_QUBITS" --n-layers "$N_LAYERS" \
-                --lr "$LR" --entropy "$ENTROPY" --encoding "$ENCODING" \
-                --seed "$SEED" --fixed-instance --out-prefix "$OUT_DIR/pg"
+    for ENC in ry ryrz; do
+        for MODEL in $PG_MODELS; do
+            for SEED in $SEEDS; do
+                run_bg "b_${ENC}_${MODEL}_s${SEED}" reinforce_qrl.py \
+                    --model "$MODEL" --node "$NODE" --capacity "$CAPACITY" \
+                    --episodes "$EPISODES" --n-qubits "$N_QUBITS" --n-layers "$N_LAYERS" \
+                    --lr "$LR" --entropy "$ENTROPY" --encoding "$ENC" \
+                    --seed "$SEED" --fixed-instance \
+                    --out-prefix "$OUT_DIR/pg_${ENC}"
+            done
         done
     done
 
     wait_all
-    aggregate "$OUT_DIR/pg" "$PG_MODELS"
+    for ENC in ry ryrz; do
+        aggregate "$OUT_DIR/pg_${ENC}" "$PG_MODELS" \
+                  "$OUT_DIR/summary_${ENC}.csv"
+    done
     echo "=== Rung B done: $(date) ==="
 fi
 
@@ -230,13 +246,15 @@ fi
 # Rung C — REINFORCE, policy learning
 # ============================================================
 if [ "$RUNG" = "C" ]; then
-    echo "=== Rung C: REINFORCE policy-learning ==="
+    echo "=== Rung C: REINFORCE policy-learning (2000 episodes) ==="
+    # Policy learning needs 2× the episode budget of fixed-instance to differentiate models.
+    C_EPISODES="${EPISODES:-2000}"
 
     for MODEL in $PG_MODELS; do
         for SEED in $SEEDS; do
-            run_bg "${MODEL}_s${SEED}" reinforce_qrl.py \
+            run_bg "c_${MODEL}_s${SEED}" reinforce_qrl.py \
                 --model "$MODEL" --node "$NODE" --capacity "$CAPACITY" \
-                --episodes "$EPISODES" --n-qubits "$N_QUBITS" --n-layers "$N_LAYERS" \
+                --episodes "$C_EPISODES" --n-qubits "$N_QUBITS" --n-layers "$N_LAYERS" \
                 --lr "$LR" --entropy "$ENTROPY" --encoding "$ENCODING" \
                 --seed "$SEED" --out-prefix "$OUT_DIR/policy"
         done
@@ -290,17 +308,20 @@ fi
 #   n=4 (9q):  300 eps per sub-experiment
 # ============================================================
 if [ "$RUNG" = "E" ]; then
-    echo "=== Rung E: scaling + gap analysis (n=3, n=4) ==="
+    echo "=== Rung E: scaling + gap analysis (n=3, n=4, n=5) ==="
 
-    declare -A E_EPS=( [3]=500 [4]=300 )
+    # Fixed-instance episode budgets (shorter at n=5 due to 11-qubit simulation cost)
+    declare -A E_EPS=( [3]=500 [4]=300 [5]=150 )
+    # Policy-learning needs more episodes to differentiate models
+    declare -A E_POL_EPS=( [3]=1000 [4]=600 [5]=250 )
 
-    for N_SIZE in 3 4; do
+    for N_SIZE in 3 4 5; do
         NQ=$(( 2 * N_SIZE + 1 ))
         EPS_N=${E_EPS[$N_SIZE]}
-        echo "--- n=$N_SIZE  qubits=$NQ  episodes=$EPS_N ---"
+        EPS_POL=${E_POL_EPS[$N_SIZE]}
+        echo "--- n=$N_SIZE  qubits=$NQ  fixed_eps=$EPS_N  policy_eps=$EPS_POL ---"
 
         for ENC in ry ryrz; do
-            # Fixed-instance: train on one problem, tests route memorisation
             for MODEL in $PG_MODELS; do
                 for SEED in $SEEDS; do
                     run_bg "e_n${N_SIZE}_${ENC}_fixed_${MODEL}_s${SEED}" reinforce_qrl.py \
@@ -314,12 +335,12 @@ if [ "$RUNG" = "E" ]; then
             done
         done
 
-        # Policy learning: new instance each episode, tests generalisation
+        # Policy learning: new instance each episode — more eps than fixed
         for MODEL in $PG_MODELS; do
             for SEED in $SEEDS; do
                 run_bg "e_n${N_SIZE}_ry_policy_${MODEL}_s${SEED}" reinforce_qrl.py \
                     --model "$MODEL" --node "$N_SIZE" --capacity "$CAPACITY" \
-                    --episodes "$EPS_N" \
+                    --episodes "$EPS_POL" \
                     --n-qubits "$NQ" --n-layers "$N_LAYERS" \
                     --lr "$LR" --entropy "$ENTROPY" --encoding "ry" \
                     --seed "$SEED" \
@@ -331,7 +352,7 @@ if [ "$RUNG" = "E" ]; then
     wait_all
 
     # Gap analysis FIRST — needs .pt checkpoints before aggregate deletes them
-    for N_SIZE in 3 4; do
+    for N_SIZE in 3 4 5; do
         NQ=$(( 2 * N_SIZE + 1 ))
         for ENC in ry ryrz; do
             python3 -u gap_analysis.py \
@@ -356,8 +377,8 @@ if [ "$RUNG" = "E" ]; then
         echo "Gap CSVs for n=$N_SIZE -> $OUT_DIR/gap_n${N_SIZE}_*.csv"
     done
 
-    # Aggregate AFTER gap analysis (--delete-seeds removes per-seed .pt files)
-    for N_SIZE in 3 4; do
+    # Aggregate AFTER gap analysis
+    for N_SIZE in 3 4 5; do
         for ENC in ry ryrz; do
             aggregate "$OUT_DIR/e_n${N_SIZE}_${ENC}_fixed" "$PG_MODELS" \
                       "$OUT_DIR/summary_n${N_SIZE}_${ENC}_fixed.csv"
@@ -402,13 +423,15 @@ fi
 # ============================================================
 if [ "$RUNG" = "G" ]; then
     echo "=== Rung G: topology × layer-depth sensitivity ==="
+    # 5 topologies (ring/brick/star/all/none), 500 eps for reliable convergence signal,
+    # 5 seeds for tighter variance, n=3 and n=4.
     python3 -u sweep_experiment.py \
         --node 3 4 \
         --layers 1 2 3 4 \
-        --topologies ring brick star \
+        --topologies ring brick star all none \
         --models quantum qaoa \
-        --seeds 0 1 2 \
-        --episodes 200 \
+        --seeds 0 1 2 3 4 \
+        --episodes 500 \
         --n-jobs "$SLURM_CPUS_PER_TASK" \
         --out "$OUT_DIR/topo_sweep.csv" \
         2>&1 | tee "$OUT_DIR/topo_sweep.log"
@@ -425,28 +448,73 @@ fi
 # Runtime: ~10h on 32 CPUs (5 models × 7 seeds × 2 conditions × 500 eps).
 # ============================================================
 if [ "$RUNG" = "H" ]; then
-    echo "=== Rung H: critic ablation (pure REINFORCE vs actor-critic) ==="
+    echo "=== Rung H: value_coef sweep (0.0, 0.1, 0.25, 0.5) ==="
     H_MODELS="quantum qaoa node-quantum node-qaoa classical"
 
-    for CONDITION in nocritic critic; do
-        VC="0.0"
-        [ "$CONDITION" = "critic" ] && VC="0.5"
+    for VC in 0.0 0.1 0.25 0.5; do
+        VC_LABEL=$(echo "$VC" | tr '.' 'p')   # 0.25 → 0p25
         for MODEL in $H_MODELS; do
             for SEED in $SEEDS; do
-                run_bg "h_${CONDITION}_${MODEL}_s${SEED}" reinforce_qrl.py \
+                run_bg "h_vc${VC_LABEL}_${MODEL}_s${SEED}" reinforce_qrl.py \
                     --model "$MODEL" --node 4 --capacity "$CAPACITY" \
                     --episodes 500 --n-qubits 9 --n-layers "$N_LAYERS" \
                     --lr "$LR" --entropy "$ENTROPY" --encoding ry \
                     --value-coef "$VC" \
                     --seed "$SEED" --fixed-instance \
-                    --out-prefix "$OUT_DIR/h_${CONDITION}"
+                    --out-prefix "$OUT_DIR/h_vc${VC_LABEL}"
             done
         done
     done
 
     wait_all
-    aggregate "$OUT_DIR/h_nocritic" "$H_MODELS" "$OUT_DIR/summary_nocritic.csv"
-    aggregate "$OUT_DIR/h_critic"   "$H_MODELS" "$OUT_DIR/summary_critic.csv"
+    for VC in 0.0 0.1 0.25 0.5; do
+        VC_LABEL=$(echo "$VC" | tr '.' 'p')
+        aggregate "$OUT_DIR/h_vc${VC_LABEL}" "$H_MODELS" \
+                  "$OUT_DIR/summary_vc${VC_LABEL}.csv"
+    done
+
+    # Convergence-speed analysis: episode at which each (model, vc) first reaches
+    # 80% of its best reward — shows critic benefit independently of final performance.
+    python3 - <<'PYEOF' >> "$OUT_DIR/convergence_speed.log" 2>&1
+import glob, numpy as np, csv, os
+
+OUT_DIR = os.environ.get("OUT_DIR", ".")
+threshold = 0.80
+rows = []
+for vc_label, vc in [("0p0","0.0"),("0p1","0.1"),("0p25","0.25"),("0p5","0.5")]:
+    prefix = f"{OUT_DIR}/h_vc{vc_label}"
+    for model in ["quantum","qaoa","node-quantum","node-qaoa","classical"]:
+        files = glob.glob(f"{prefix}_{model}_s*_rewards.txt")
+        if not files:
+            continue
+        curves = [np.loadtxt(f) for f in files]
+        mean = np.stack(curves).mean(axis=0)
+        best, worst = mean.max(), mean.min()
+        span = best - worst
+        if span < 1e-6:
+            conv_ep = len(mean)
+        else:
+            thr = worst + threshold * span
+            conv_ep = next((i for i,v in enumerate(mean) if v >= thr), len(mean))
+        rows.append({"value_coef": vc, "model": model,
+                     "conv_ep_80pct": conv_ep, "n_seeds": len(files),
+                     "final_reward": float(mean[-20:].mean())})
+
+rows.sort(key=lambda r: (r["model"], float(r["value_coef"])))
+print(f"\n{'model':14s} {'vc':5s}  {'conv_ep':>8s}  {'final_reward':>12s}")
+print("-" * 45)
+for r in rows:
+    print(f"{r['model']:14s} {r['value_coef']:5s}  {r['conv_ep_80pct']:8d}  "
+          f"{r['final_reward']:12.3f}")
+
+if rows:
+    keys = list(rows[0].keys())
+    with open(f"{OUT_DIR}/convergence_speed.csv", "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=keys)
+        w.writeheader(); w.writerows(rows)
+    print(f"\nSaved {OUT_DIR}/convergence_speed.csv")
+PYEOF
+
     echo "=== Rung H done: $(date) ==="
 fi
 
@@ -469,16 +537,17 @@ fi
 # Runtime: ~18h on 32 CPUs (6 models × 7 seeds × 2 modes × 300 eps).
 # ============================================================
 if [ "$RUNG" = "I" ]; then
-    echo "=== Rung I: PPO fixed-instance + policy-learning ==="
+    echo "=== Rung I: PPO fixed-instance + policy-learning (n=3,4,5) ==="
 
-    declare -A I_EPS=( [3]=300 [4]=200 )
+    declare -A I_EPS=(     [3]=300  [4]=200  [5]=100  )
+    declare -A I_POL_EPS=( [3]=500  [4]=300  [5]=150  )
 
-    for N_SIZE in 3 4; do
+    for N_SIZE in 3 4 5; do
         NQ=$(( 2 * N_SIZE + 1 ))
         EPS_I=${I_EPS[$N_SIZE]}
-        echo "--- n=$N_SIZE  qubits=$NQ  episodes=$EPS_I ---"
+        EPS_P=${I_POL_EPS[$N_SIZE]}
+        echo "--- n=$N_SIZE  qubits=$NQ  fixed_eps=$EPS_I  policy_eps=$EPS_P ---"
 
-        # Fixed instance: convergence comparison vs DQN / REINFORCE
         for MODEL in $PPO_MODELS; do
             for SEED in $SEEDS; do
                 run_bg "i_n${N_SIZE}_fixed_${MODEL}_s${SEED}" ppo_qrl.py \
@@ -491,12 +560,11 @@ if [ "$RUNG" = "I" ]; then
             done
         done
 
-        # Policy learning: new instance each episode — key generalisation test
         for MODEL in $PPO_MODELS; do
             for SEED in $SEEDS; do
                 run_bg "i_n${N_SIZE}_policy_${MODEL}_s${SEED}" ppo_qrl.py \
                     --model "$MODEL" --node "$N_SIZE" --capacity "$CAPACITY" \
-                    --episodes "$EPS_I" \
+                    --episodes "$EPS_P" \
                     --n-qubits "$NQ" --n-layers "$N_LAYERS" \
                     --lr "$LR" --entropy "$ENTROPY" --encoding "$ENCODING" \
                     --seed "$SEED" \
@@ -507,8 +575,7 @@ if [ "$RUNG" = "I" ]; then
 
     wait_all
 
-    # Gap analysis before aggregate (needs .pt files intact)
-    for N_SIZE in 3 4; do
+    for N_SIZE in 3 4 5; do
         NQ=$(( 2 * N_SIZE + 1 ))
         python3 -u gap_analysis.py \
             --prefix  "$OUT_DIR/i_n${N_SIZE}_fixed" \
@@ -531,8 +598,7 @@ if [ "$RUNG" = "I" ]; then
         echo "PPO gap CSVs for n=$N_SIZE -> $OUT_DIR/gap_ppo_n${N_SIZE}_*.csv"
     done
 
-    # Aggregate with separate CSVs per sub-experiment
-    for N_SIZE in 3 4; do
+    for N_SIZE in 3 4 5; do
         aggregate "$OUT_DIR/i_n${N_SIZE}_fixed"  "$PPO_MODELS" \
                   "$OUT_DIR/summary_ppo_n${N_SIZE}_fixed.csv"
         aggregate "$OUT_DIR/i_n${N_SIZE}_policy" "$PPO_MODELS" \
