@@ -149,7 +149,7 @@ class QuantumQNetwork(nn.Module):
     Pipeline:
         state (1, F)  ->  classical compressor (F -> n_angles angles in [-pi,pi])
                       ->  PQC (data re-uploading, n_layers)
-                      ->  <Z_i> + <Z_i Z_{i+1}> ring  (2*n_qubits scalars)
+                      ->  <Z_i> + <Z_i Z_{p,q}> topology-matched  (2*n_qubits scalars)
                       ->  linear head (2*n_qubits -> n_actions)
 
     Sensitivity parameters (all keyword-only):
@@ -195,10 +195,19 @@ class QuantumQNetwork(nn.Module):
             nn.LayerNorm(self.n_angles),
         )
 
-        # Circuit output: n_qubits <Z_i> + n_qubits <Z_i Z_{i+1}> ring.
-        # ZZ terms are always ring pairs regardless of entanglement topology --
-        # they are fixed observables, not part of the topology design.
+        # Circuit output: n_qubits <Z_i> + n_qubits <Z_i Z_{i+1}>.
+        # ZZ pairs are chosen to match the entanglement topology so the
+        # measurement basis reads the correlations the circuit actually builds.
+        # We always keep exactly n_qubits pairs (pad with ring if topology gives
+        # fewer, truncate if it gives more) so n_outputs = 2*n_qubits is fixed.
         self.n_outputs = 2 * self.n_qubits
+        _ring_pairs = [(q, (q + 1) % self.n_qubits) for q in range(self.n_qubits)]
+        _ent = _ent_pairs(self.n_qubits, entanglement)
+        if len(_ent) >= self.n_qubits:
+            obs_pairs = _ent[:self.n_qubits]
+        else:
+            _extra = [p for p in _ring_pairs if p not in _ent]
+            obs_pairs = (_ent + _extra)[:self.n_qubits]
 
         # enc_scales[l, q] (or [l, q, 2] for ryrz) are trainable encoding weights
         # living inside the quantum circuit: RY(enc_scales[l,q] * compressed_input[q]).
@@ -244,8 +253,8 @@ class QuantumQNetwork(nn.Module):
                     qml.RZ(weights[layer, q, 2], wires=q)
 
             z_obs  = [qml.expval(qml.PauliZ(q)) for q in range(self.n_qubits)]
-            zz_obs = [qml.expval(qml.PauliZ(q) @ qml.PauliZ((q + 1) % self.n_qubits))
-                      for q in range(self.n_qubits)]
+            zz_obs = [qml.expval(qml.PauliZ(p[0]) @ qml.PauliZ(p[1]))
+                      for p in obs_pairs]
             return z_obs + zz_obs
 
         self.qlayer = qml.qnn.TorchLayer(circuit, weight_shapes)
@@ -563,6 +572,13 @@ class QuantumNodeQNetwork(nn.Module):
         )
 
         self.n_outputs  = 2 * self.n_qubits
+        _ring_pairs = [(q, (q + 1) % self.n_qubits) for q in range(self.n_qubits)]
+        _ent = _ent_pairs(self.n_qubits, entanglement)
+        if len(_ent) >= self.n_qubits:
+            obs_pairs = _ent[:self.n_qubits]
+        else:
+            _extra = [p for p in _ring_pairs if p not in _ent]
+            obs_pairs = (_ent + _extra)[:self.n_qubits]
         enc_shape = (self.n_layers, self.n_qubits, 2) if encoding == "ryrz" \
                     else (self.n_layers, self.n_qubits)
         weight_shapes   = {
@@ -591,8 +607,8 @@ class QuantumNodeQNetwork(nn.Module):
                     qml.RY(weights[layer, q, 1], wires=q)
                     qml.RZ(weights[layer, q, 2], wires=q)
             z_obs  = [qml.expval(qml.PauliZ(q)) for q in range(self.n_qubits)]
-            zz_obs = [qml.expval(qml.PauliZ(q) @ qml.PauliZ((q + 1) % self.n_qubits))
-                      for q in range(self.n_qubits)]
+            zz_obs = [qml.expval(qml.PauliZ(p[0]) @ qml.PauliZ(p[1]))
+                      for p in obs_pairs]
             return z_obs + zz_obs
 
         self.qlayer = qml.qnn.TorchLayer(circuit, weight_shapes)
