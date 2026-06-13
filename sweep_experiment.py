@@ -75,9 +75,10 @@ def qubit_sizes(node: int) -> list[int]:
 
 def _run_one_task(args: tuple) -> dict:
     """Called by ProcessPoolExecutor workers — must live at module level."""
-    model, node, nq, nl, seed, episodes, topo, out_dir = args
+    model, node, nq, nl, seed, episodes, topo, out_dir, tw_tightness = args
     try:
-        return run_one(model, node, nq, nl, seed, episodes, entanglement=topo, out_dir=out_dir)
+        return run_one(model, node, nq, nl, seed, episodes, entanglement=topo,
+                       out_dir=out_dir, tw_tightness=tw_tightness)
     except Exception as exc:
         return {"model": model, "node": node, "n_qubits": nq,
                 "n_layers": nl, "seed": seed, "entanglement": topo,
@@ -98,6 +99,7 @@ def run_one(
     capacity: int = 5,
     entanglement: str = "ring",
     out_dir: str = ".",
+    tw_tightness: float = 0.0,
 ) -> dict[str, Any]:
     """
     Train one (model, qubit_count, layers, seed, entanglement) configuration.
@@ -120,6 +122,7 @@ def run_one(
         n_qubits=n_qubits,
         n_layers=n_layers,
         entanglement=entanglement,
+        tw_tightness=tw_tightness,
     )
     net = result["net"]
     params = net.param_report()
@@ -186,14 +189,15 @@ def _convergence_episode(rewards: list[float], window: int = 10) -> int:
 # --------------------------------------------------------------------------- #
 
 def sweep(
-    nodes:      list[int] = DEFAULT_NODES,
-    layers:     list[int] = DEFAULT_LAYERS,
-    seeds:      list[int] = DEFAULT_SEEDS,
-    episodes:   int       = DEFAULT_EPISODES,
-    models:     list[str] = DEFAULT_MODELS,
-    topologies: list[str] = DEFAULT_TOPOLOGIES,
-    out_csv:    str       = "sweep_results.csv",
-    n_jobs:     int       = 1,
+    nodes:        list[int] = DEFAULT_NODES,
+    layers:       list[int] = DEFAULT_LAYERS,
+    seeds:        list[int] = DEFAULT_SEEDS,
+    episodes:     int       = DEFAULT_EPISODES,
+    models:       list[str] = DEFAULT_MODELS,
+    topologies:   list[str] = DEFAULT_TOPOLOGIES,
+    out_csv:      str       = "sweep_results.csv",
+    n_jobs:       int       = 1,
+    tw_tightness: float     = 0.0,
 ) -> list[dict]:
     out_dir = os.path.dirname(os.path.abspath(out_csv))
     os.makedirs(out_dir, exist_ok=True)
@@ -253,7 +257,8 @@ def sweep(
         for i, (model, node, nq, nl, seed, topo) in enumerate(valid, 1):
             print(f"[{i:3d}/{total}]  {model:9s}  n={node}  q={nq}  l={nl}  seed={seed}  topo={topo}")
             try:
-                row = run_one(model, node, nq, nl, seed, episodes, entanglement=topo, out_dir=out_dir)
+                row = run_one(model, node, nq, nl, seed, episodes, entanglement=topo,
+                              out_dir=out_dir, tw_tightness=tw_tightness)
             except Exception as exc:
                 print(f"  ERROR: {exc}")
                 row = {"model": model, "node": node, "n_qubits": nq,
@@ -264,7 +269,8 @@ def sweep(
             _save(rows, fieldnames)
     else:
         from concurrent.futures import ProcessPoolExecutor, as_completed
-        tasks = [(model, node, nq, nl, seed, episodes, topo, out_dir) for (model, node, nq, nl, seed, topo) in valid]
+        tasks = [(model, node, nq, nl, seed, episodes, topo, out_dir, tw_tightness)
+                 for (model, node, nq, nl, seed, topo) in valid]
         print(f"Launching {total} configs across {n_jobs} workers ...")
         with ProcessPoolExecutor(max_workers=n_jobs) as ex:
             future_map = {ex.submit(_run_one_task, t): t for t in tasks}
@@ -330,6 +336,8 @@ if __name__ == "__main__":
                          "Set to $SLURM_CPUS_PER_TASK on the cluster.")
     ap.add_argument("--quick",    action="store_true",
                     help="1 seed, 80 episodes — for a fast sanity check")
+    ap.add_argument("--tw-tightness", type=float, default=0.0,
+                    help="Time-window tightness: 0=loose (15-30 min), 1=tight (3-8 min).")
     args = ap.parse_args()
 
     if args.quick:
@@ -337,12 +345,13 @@ if __name__ == "__main__":
         args.episodes = 80
 
     sweep(
-        nodes      = args.node,
-        layers     = args.layers,
-        seeds      = args.seeds,
-        episodes   = args.episodes,
-        models     = args.models,
-        topologies = args.topologies,
-        out_csv    = args.out,
-        n_jobs     = args.n_jobs,
+        nodes        = args.node,
+        layers       = args.layers,
+        seeds        = args.seeds,
+        episodes     = args.episodes,
+        models       = args.models,
+        topologies   = args.topologies,
+        out_csv      = args.out,
+        n_jobs       = args.n_jobs,
+        tw_tightness = args.tw_tightness,
     )

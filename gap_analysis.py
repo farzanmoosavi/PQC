@@ -298,6 +298,7 @@ def analyze(
     mode: str = "fixed",          # "fixed" | "policy"
     capacity: int = 5,
     out_csv: str = "",
+    tw_tightness: float = 0.0,
 ) -> list[dict]:
     """
     Load checkpoints from {prefix}_{model}_s{seed}.pt, evaluate the greedy
@@ -323,7 +324,8 @@ def analyze(
         # "random" is a parameter-free baseline — no checkpoint needed.
         if model == "random":
             for seed in seeds:
-                env = CPDPTWEnv(node=node, vehicle_capacity=capacity, rng_seed=seed)
+                env = CPDPTWEnv(node=node, vehicle_capacity=capacity, rng_seed=seed,
+                                tw_tightness=tw_tightness)
                 env.reset(regenerate=True)
                 if mode == "fixed":
                     _, ref_dist, ref_cost, _ = reference_solve(env)
@@ -334,7 +336,7 @@ def analyze(
                     gaps, ref_dists, ref_costs, rl_dists, rl_costs, dones = [], [], [], [], [], []
                     for es in _POLICY_EVAL_SEEDS:
                         eval_env = CPDPTWEnv(node=node, vehicle_capacity=capacity,
-                                            rng_seed=es)
+                                            rng_seed=es, tw_tightness=tw_tightness)
                         eval_env.reset(regenerate=True)
                         _, ref_d, ref_c, _ = reference_solve(eval_env)
                         rl_d, rl_c, d = eval_random_policy(eval_env)
@@ -375,7 +377,8 @@ def analyze(
                 continue
 
             try:
-                env = CPDPTWEnv(node=node, vehicle_capacity=capacity, rng_seed=seed)
+                env = CPDPTWEnv(node=node, vehicle_capacity=capacity, rng_seed=seed,
+                                tw_tightness=tw_tightness)
                 env.reset(regenerate=True)
                 net = build_net(model, env, n_qubits=n_qubits, n_layers=n_layers,
                                 encoding=encoding)
@@ -399,7 +402,7 @@ def analyze(
                 gaps, ref_dists, ref_costs, rl_dists, rl_costs, dones = [], [], [], [], [], []
                 for es in _POLICY_EVAL_SEEDS:
                     eval_env = CPDPTWEnv(node=node, vehicle_capacity=capacity,
-                                        rng_seed=es)
+                                        rng_seed=es, tw_tightness=tw_tightness)
                     eval_env.reset(regenerate=True)
                     _, ref_d, ref_c, _ = reference_solve(eval_env)
                     rl_d, rl_c, d = eval_greedy_policy(net, eval_env)
@@ -481,12 +484,14 @@ def _write_csv(rows: list[dict], path: str) -> None:
 # Solver-only benchmark
 # --------------------------------------------------------------------------- #
 
-def solver_only(node: int, n_instances: int = 30, capacity: int = 5) -> None:
+def solver_only(node: int, n_instances: int = 30, capacity: int = 5,
+                tw_tightness: float = 0.0) -> None:
     method = "exact-DFS" if node <= 5 else "greedy-NN"
     print(f"\nReference solver  node={node}  method={method}  n={n_instances}")
     dists, times = [], []
     for i in range(n_instances):
-        env = CPDPTWEnv(node=node, vehicle_capacity=capacity, rng_seed=i)
+        env = CPDPTWEnv(node=node, vehicle_capacity=capacity, rng_seed=i,
+                        tw_tightness=tw_tightness)
         env.reset(regenerate=True)
         t0 = time.perf_counter()
         _, dist, _, _ = reference_solve(env)
@@ -528,20 +533,24 @@ if __name__ == "__main__":
                     help="Run reference solver benchmark only (no RL eval).")
     ap.add_argument("--n-instances", type=int, default=30,
                     help="Number of instances for --solver-only.")
+    ap.add_argument("--tw-tightness", type=float, default=0.0,
+                    help="Time-window tightness: 0=loose (15-30 min), 1=tight (3-8 min).")
     args = ap.parse_args()
 
     if args.solver_only:
-        solver_only(args.node, args.n_instances, args.capacity)
+        solver_only(args.node, args.n_instances, args.capacity,
+                    tw_tightness=args.tw_tightness)
     else:
         analyze(
-            prefix   = args.prefix,
-            models   = args.models,
-            seeds    = args.seeds,
-            node     = args.node,
-            n_qubits = args.n_qubits,
-            n_layers = args.n_layers,
-            encoding = args.encoding,
-            mode     = args.mode,
-            capacity = args.capacity,
-            out_csv  = args.out_csv,
+            prefix        = args.prefix,
+            models        = args.models,
+            seeds         = args.seeds,
+            node          = args.node,
+            n_qubits      = args.n_qubits,
+            n_layers      = args.n_layers,
+            encoding      = args.encoding,
+            mode          = args.mode,
+            capacity      = args.capacity,
+            out_csv       = args.out_csv,
+            tw_tightness  = args.tw_tightness,
         )

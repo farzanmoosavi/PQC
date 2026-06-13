@@ -124,12 +124,14 @@ def train_reinforce(
     save_every: int = 100,
     encoding: str = "ry",
     entanglement: str = "ring",
+    tw_tightness: float = 0.0,
 ) -> dict:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    env = CPDPTWEnv(node=node, vehicle_capacity=capacity, rng_seed=seed)
+    env = CPDPTWEnv(node=node, vehicle_capacity=capacity, rng_seed=seed,
+                    tw_tightness=tw_tightness)
     net = build_net(model_kind, env, n_qubits, n_layers, encoding, entanglement).to(device)
     critic = ValueHead(env.n_observations).to(device)
     optimizer = optim.AdamW(

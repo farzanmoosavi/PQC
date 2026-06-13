@@ -422,6 +422,31 @@ def test_gap_analysis_end_to_end():
             f"random gap={random_row['gap_pct']:.1f}%")
 
 
+def test_tw_tightness():
+    """Tight time windows must produce higher costs than loose windows (more violations)."""
+    from cpdptw_env import CPDPTWEnv
+    from gap_analysis import eval_random_policy
+    costs_loose, costs_tight = [], []
+    for seed in range(5):
+        env_loose = CPDPTWEnv(node=3, vehicle_capacity=5, rng_seed=seed, tw_tightness=0.0)
+        env_loose.reset(regenerate=True)
+        _, cost_l, _ = eval_random_policy(env_loose, n_trials=8)
+        costs_loose.append(cost_l)
+
+        env_tight = CPDPTWEnv(node=3, vehicle_capacity=5, rng_seed=seed, tw_tightness=1.0)
+        env_tight.reset(regenerate=True)
+        _, cost_t, _ = eval_random_policy(env_tight, n_trials=8)
+        costs_tight.append(cost_t)
+
+    mean_loose = sum(costs_loose) / len(costs_loose)
+    mean_tight = sum(costs_tight) / len(costs_tight)
+    # Tight windows should produce higher (worse) costs than loose windows.
+    assert mean_tight > mean_loose, (
+        f"Expected tight > loose cost but got tight={mean_tight:.4f} loose={mean_loose:.4f}"
+    )
+    return f"loose_cost={mean_loose:.4f}  tight_cost={mean_tight:.4f}  ratio={mean_tight/max(mean_loose,1e-6):.2f}x"
+
+
 # --------------------------------------------------------------------------- #
 # 8. Module imports (aggregate_results, barren_plateau, sweep_experiment)
 # --------------------------------------------------------------------------- #
@@ -509,6 +534,7 @@ def main():
     print("\n[ gap analysis ]")
     check("reference solver (exact-B&B n=3)", test_reference_solver)
     check("random policy baseline",           test_random_baseline)
+    check("tw_tightness raises cost",         test_tw_tightness)
     if not args.quick:
         check("gap analysis end-to-end",      test_gap_analysis_end_to_end)
 

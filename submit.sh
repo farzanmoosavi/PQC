@@ -20,6 +20,7 @@
 #   sbatch --export=RUNG=G submit.sh              # Rung G: topology × depth sensitivity
 #   sbatch --export=RUNG=H submit.sh              # Rung H: critic ablation (REINFORCE vs AC)
 #   sbatch --export=RUNG=I submit.sh              # Rung I: PPO fixed-instance + policy-learning
+#   sbatch --export=RUNG=J submit.sh              # Rung J: tw_tightness sweep [0, 0.5, 1.0]
 #   sbatch --export=RUNG=T submit.sh              # Rung T: smoke-test only
 #   sbatch --export=RUNG=A,EPISODES=500 submit.sh
 #   sbatch --export=RUNG=B,SEEDS="0 1 2 3 4" submit.sh
@@ -27,7 +28,7 @@
 # Recommended wall times (override default 24h with --time=HH:MM:SS):
 #   T  0:20:00    A  24:00:00    B  22:00:00    C  24:00:00
 #   D  8:00:00    E  24:00:00    F  1:00:00     G  14:00:00   H  24:00:00
-#   I  24:00:00
+#   I  24:00:00   J  24:00:00
 # Example: sbatch --time=1:00:00 --export=RUNG=F submit.sh
 # ============================================================
 
@@ -606,6 +607,82 @@ if [ "$RUNG" = "I" ]; then
     done
 
     echo "=== Rung I done: $(date) ==="
+fi
+
+# ============================================================
+# Rung J — Time-window tightness sweep
+#
+# Trains DQN with tw_tightness ∈ {0.0, 0.5, 1.0} for all models
+# at n=3 and n=4.  The key hypothesis: tighter windows make the RL
+# objective harder to satisfy with a greedy-distance heuristic, so
+# models with richer temporal representations (quantum or node-based)
+# should pull ahead of flat classical MLPs.
+#
+# Gap analysis compares each (model, tightness) pair against the
+# exact reference solver (also run with the same tightness so the
+# reference cost reflects the true optimum under that window width).
+#
+# Runtime: ~20h on 32 CPUs (6 models × 12 seeds × 3 tightness ×
+#          2 node sizes × 500 eps).
+# ============================================================
+if [ "$RUNG" = "J" ]; then
+    echo "=== Rung J: tw_tightness sweep [0.0, 0.5, 1.0] ==="
+    J_MODELS="quantum qaoa node-quantum node-qaoa classical classical-large"
+    J_SEEDS="${SEEDS:-0 1 2 3 4 5 6}"
+    J_EPISODES="${EPISODES:-500}"
+
+    for TW in 0.0 0.5 1.0; do
+        TW_LABEL=$(echo "$TW" | tr '.' 'p')   # 0.5 → 0p5
+        for N_SIZE in 3 4; do
+            NQ=$(( 2 * N_SIZE + 1 ))
+            echo "--- tw=$TW  n=$N_SIZE  qubits=$NQ ---"
+            for MODEL in $J_MODELS; do
+                case "$MODEL" in
+                    node-*) MODEL_NQ=$NQ ;;
+                    *)       MODEL_NQ=$N_QUBITS ;;
+                esac
+                for SEED in $J_SEEDS; do
+                    run_bg "j_tw${TW_LABEL}_n${N_SIZE}_${MODEL}_s${SEED}" train_qrl.py \
+                        --model "$MODEL" --node "$N_SIZE" --capacity "$CAPACITY" \
+                        --episodes "$J_EPISODES" \
+                        --n-qubits "$MODEL_NQ" --n-layers "$N_LAYERS" \
+                        --seed "$SEED" --fixed-instance --encoding "$ENCODING" \
+                        --out-prefix "$OUT_DIR/j_tw${TW_LABEL}_n${N_SIZE}"
+                done
+            done
+        done
+    done
+
+    wait_all
+
+    # Gap analysis for each (tightness, node_size) pair
+    for TW in 0.0 0.5 1.0; do
+        TW_LABEL=$(echo "$TW" | tr '.' 'p')
+        for N_SIZE in 3 4; do
+            NQ=$(( 2 * N_SIZE + 1 ))
+            python3 -u gap_analysis.py \
+                --prefix       "$OUT_DIR/j_tw${TW_LABEL}_n${N_SIZE}" \
+                --models       $J_MODELS \
+                --seeds        $J_SEEDS \
+                --node         "$N_SIZE" --n-qubits "$NQ" --n-layers "$N_LAYERS" \
+                --encoding     "$ENCODING" --mode fixed \
+                --tw-tightness "$TW" \
+                --out-csv      "$OUT_DIR/gap_tw${TW_LABEL}_n${N_SIZE}.csv" \
+                >> "$OUT_DIR/gap_j.log" 2>&1
+        done
+    done
+
+    # Aggregate reward/dist/complete curves per (tightness, node_size)
+    for TW in 0.0 0.5 1.0; do
+        TW_LABEL=$(echo "$TW" | tr '.' 'p')
+        for N_SIZE in 3 4; do
+            aggregate "$OUT_DIR/j_tw${TW_LABEL}_n${N_SIZE}" "$J_MODELS" \
+                      "$OUT_DIR/summary_tw${TW_LABEL}_n${N_SIZE}.csv"
+        done
+    done
+
+    echo "Gap CSVs: $OUT_DIR/gap_tw*.csv"
+    echo "=== Rung J done: $(date) ==="
 fi
 
 # ============================================================

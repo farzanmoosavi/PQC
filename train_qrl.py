@@ -201,12 +201,13 @@ def train(model_kind="quantum", node=5, capacity=5, episodes=200,
           eps_start=0.9, eps_end=0.05, eps_decay=600,
           fixed_instance=True, seed=0, out_prefix="qrl",
           n_qubits=6, n_layers=3, save_every=100, encoding="ry",
-          entanglement="ring"):
+          entanglement="ring", tw_tightness=0.0):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    env = CPDPTWEnv(node=node, vehicle_capacity=capacity, rng_seed=seed)
+    env = CPDPTWEnv(node=node, vehicle_capacity=capacity, rng_seed=seed,
+                    tw_tightness=tw_tightness)
     net = build_net(model_kind, env, n_qubits, n_layers, encoding, entanglement).to(device)
     target_net = build_net(model_kind, env, n_qubits, n_layers, encoding, entanglement).to(device)
     target_net.load_state_dict(net.state_dict())

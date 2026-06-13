@@ -55,6 +55,8 @@ class CPDPTWEnv:
         late_penalty_w: float = 0.010,    # delivery lateness weight (dominant)
         dist_scale: float = 1.0,          # lowered from 10.0: keeps distance
                                           # and time penalties on comparable scales
+        tw_tightness: float = 0.0,        # 0=loose (15-30 min windows),
+                                          # 1=tight (3-8 min windows)
         rng_seed: Optional[int] = None,
     ):
         self.node = int(node)
@@ -65,6 +67,7 @@ class CPDPTWEnv:
         self.early_w = float(early_penalty_w)
         self.late_w = float(late_penalty_w)
         self.dist_scale = float(dist_scale)
+        self.tw_tightness = float(np.clip(tw_tightness, 0.0, 1.0))
         self._seed = rng_seed
         self._rng = np.random.default_rng(rng_seed)
         self.reset()
@@ -99,8 +102,14 @@ class CPDPTWEnv:
             inter = self._rng.exponential(scale=self.time_frame / lam, size=self.node)
             t_pickup = np.ceil(np.cumsum(inter)).astype(int)
             t_pickup = np.clip(t_pickup, 0, self.time_frame)
+            # Delivery window width shrinks with tw_tightness:
+            #   0.0 → [15, 30] min (loose, current default)
+            #   0.5 → [7,  15] min (medium)
+            #   1.0 → [3,   8] min (tight — forces near-immediate delivery)
+            tw_lo = max(3, int(15 * (1.0 - self.tw_tightness)))
+            tw_hi = max(tw_lo + 2, int(30 * (1.0 - 0.75 * self.tw_tightness)))
             t_delivery = np.clip(
-                t_pickup + self._rng.integers(15, 30, size=self.node),
+                t_pickup + self._rng.integers(tw_lo, tw_hi, size=self.node),
                 0, self.time_frame,
             )
 
@@ -135,12 +144,15 @@ class CPDPTWEnv:
         self.total_distance += dist
 
         # One-sided time-window penalty.
+        # Late penalty scales up with tightness so violations remain costly
+        # even as windows shrink (keeps objective signal magnitude consistent).
         open_t, close_t = self.time_window[action]
+        eff_late_w = self.late_w * (1.0 + 4.0 * self.tw_tightness)
         time_pen = 0.0
         if open_t > 0 and self.vehicle_time < open_t:          # pickup early
             time_pen += self.early_w * (open_t - self.vehicle_time) ** 2
         if close_t > 0 and self.vehicle_time > close_t:        # delivery late
-            time_pen += self.late_w * (self.vehicle_time - close_t) ** 2
+            time_pen += eff_late_w * (self.vehicle_time - close_t) ** 2
 
         reward = -(dist / self.dist_scale + time_pen)
 
