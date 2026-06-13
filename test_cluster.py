@@ -423,28 +423,41 @@ def test_gap_analysis_end_to_end():
 
 
 def test_tw_tightness():
-    """Tight time windows must produce higher costs than loose windows (more violations)."""
+    """Tight windows must impose higher late-delivery penalties than loose windows.
+
+    The random policy completes n=3 routes in ~3 min of travel, which is often
+    within even tight windows — so costs come out identical (pure distance).
+    Instead we directly test the penalty mechanism: advance vehicle_time to
+    near the horizon end, then take a delivery step.  The delivery is guaranteed
+    late; tight windows compound both larger lateness AND a 5× higher weight.
+    """
     from cpdptw_env import CPDPTWEnv
-    from gap_analysis import eval_random_policy
-    costs_loose, costs_tight = [], []
-    for seed in range(5):
-        env_loose = CPDPTWEnv(node=3, vehicle_capacity=5, rng_seed=seed, tw_tightness=0.0)
-        env_loose.reset(regenerate=True)
-        _, cost_l, _ = eval_random_policy(env_loose, n_trials=8)
-        costs_loose.append(cost_l)
 
-        env_tight = CPDPTWEnv(node=3, vehicle_capacity=5, rng_seed=seed, tw_tightness=1.0)
-        env_tight.reset(regenerate=True)
-        _, cost_t, _ = eval_random_policy(env_tight, n_trials=8)
-        costs_tight.append(cost_t)
+    penalties_loose, penalties_tight = [], []
+    for seed in range(8):
+        for tightness, bucket in [(0.0, penalties_loose), (1.0, penalties_tight)]:
+            # High capacity so all pickups can be loaded at once.
+            env = CPDPTWEnv(node=3, vehicle_capacity=10, rng_seed=seed,
+                            tw_tightness=tightness)
+            env.reset(regenerate=True)
+            # Visit pickup 1 (always feasible from depot).
+            env.step(1)
+            # Jump vehicle_time to 2 min before horizon end — delivery is
+            # definitely late regardless of window width, but tight windows
+            # have higher eff_late_w AND smaller close_t → much larger penalty.
+            env.vehicle_time = env.time_frame - 2
+            _, reward, _, _, info = env.step(env.node + 1)   # delivery of pickup 1
+            if not info.get("infeasible", False):
+                bucket.append(-reward.item())   # reward is negative cost
 
-    mean_loose = sum(costs_loose) / len(costs_loose)
-    mean_tight = sum(costs_tight) / len(costs_tight)
-    # Tight windows should produce higher (worse) costs than loose windows.
+    mean_loose = sum(penalties_loose) / len(penalties_loose) if penalties_loose else 0.0
+    mean_tight = sum(penalties_tight) / len(penalties_tight) if penalties_tight else 0.0
     assert mean_tight > mean_loose, (
-        f"Expected tight > loose cost but got tight={mean_tight:.4f} loose={mean_loose:.4f}"
+        f"Expected tight > loose late penalty but got "
+        f"tight={mean_tight:.4f} loose={mean_loose:.4f}"
     )
-    return f"loose_cost={mean_loose:.4f}  tight_cost={mean_tight:.4f}  ratio={mean_tight/max(mean_loose,1e-6):.2f}x"
+    return (f"loose_penalty={mean_loose:.4f}  tight_penalty={mean_tight:.4f}  "
+            f"ratio={mean_tight/max(mean_loose, 1e-6):.2f}x")
 
 
 # --------------------------------------------------------------------------- #
