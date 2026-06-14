@@ -647,6 +647,7 @@ if [ "$RUNG" = "J" ]; then
                         --episodes "$J_EPISODES" \
                         --n-qubits "$MODEL_NQ" --n-layers "$N_LAYERS" \
                         --seed "$SEED" --fixed-instance --encoding "$ENCODING" \
+                        --tw-tightness "$TW" \
                         --out-prefix "$OUT_DIR/j_tw${TW_LABEL}_n${N_SIZE}"
                 done
             done
