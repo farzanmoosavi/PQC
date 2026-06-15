@@ -326,6 +326,8 @@ if __name__ == "__main__":
                    help="Qubit encoding strategy (default: ry).")
     p.add_argument("--entanglement", choices=["none", "ring", "brick", "all", "star"],
                    default="ring", help="Entanglement topology (default: ring).")
+    p.add_argument("--tw-tightness", type=float, default=0.0,
+                   help="Time-window tightness: 0=loose (15-30 min), 1=tight (3-8 min).")
     args = p.parse_args()
     train(model_kind=args.model, node=args.node, capacity=args.capacity,
           episodes=args.episodes, seed=args.seed,
@@ -333,4 +335,5 @@ if __name__ == "__main__":
           out_prefix=args.out_prefix,
           n_qubits=args.n_qubits, n_layers=args.n_layers,
           save_every=args.save_every, encoding=args.encoding,
-          entanglement=args.entanglement)
+          entanglement=args.entanglement,
+          tw_tightness=args.tw_tightness)
