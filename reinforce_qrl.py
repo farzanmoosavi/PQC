@@ -345,6 +345,8 @@ if __name__ == "__main__":
                    help="Qubit encoding strategy (default: ry).")
     p.add_argument("--entanglement", choices=["none", "ring", "brick", "all", "star"],
                    default="ring", help="Entanglement topology (default: ring).")
+    p.add_argument("--tw-tightness", type=float, default=0.0,
+                   help="Time-window tightness: 0=loose (15-30 min), 1=tight (3-8 min).")
     args = p.parse_args()
 
     if args.compare:
@@ -369,4 +371,5 @@ if __name__ == "__main__":
             save_every=args.save_every,
             encoding=args.encoding,
             entanglement=args.entanglement,
+            tw_tightness=args.tw_tightness,
         )

@@ -260,7 +260,7 @@ class QuantumQNetwork(nn.Module):
         self.qlayer = qml.qnn.TorchLayer(circuit, weight_shapes)
         with torch.no_grad():
             self.qlayer.weights.normal_(0.0, 0.01)
-            self.qlayer.enc_scales.uniform_(-0.3, 0.3)
+            self.qlayer.enc_scales.uniform_(0.8, 1.2)
         self.head = nn.Linear(self.n_outputs, self.n_actions)
         self.to(self.device)
         self.qlayer.to('cpu')   # circuit always runs on CPU (Bug #6)
@@ -402,7 +402,7 @@ class QAOAQNetwork(nn.Module):
         with torch.no_grad():
             self.qlayer.gamma.normal_(0.0, 0.01)
             self.qlayer.beta.normal_(0.0, 0.01)
-            self.qlayer.enc_scales.uniform_(-0.3, 0.3)
+            self.qlayer.enc_scales.uniform_(0.8, 1.2)
         self.head = nn.Linear(self.n_outputs, self.n_actions)
         self.to(self.device)
         self.qlayer.to('cpu')   # circuit always runs on CPU (Bug #6)
@@ -614,7 +614,7 @@ class QuantumNodeQNetwork(nn.Module):
         self.qlayer = qml.qnn.TorchLayer(circuit, weight_shapes)
         with torch.no_grad():
             self.qlayer.weights.normal_(0.0, 0.01)
-            self.qlayer.enc_scales.uniform_(-0.3, 0.3)
+            self.qlayer.enc_scales.uniform_(0.8, 1.2)
         self.head   = nn.Linear(self.n_outputs, self.n_actions)
         self.to(self.device)
         self.qlayer.to('cpu')   # circuit always runs on CPU; keep params there (Bug #6)
@@ -754,7 +754,7 @@ class QAOANodeQNetwork(nn.Module):
         with torch.no_grad():
             self.qlayer.gamma.normal_(0.0, 0.01)
             self.qlayer.beta.normal_(0.0, 0.01)
-            self.qlayer.enc_scales.uniform_(-0.3, 0.3)
+            self.qlayer.enc_scales.uniform_(0.8, 1.2)
         self.head = nn.Linear(self.n_outputs, self.n_actions)
         self.to(self.device)
         self.qlayer.to('cpu')   # circuit always runs on CPU (Bug #6)

@@ -39,6 +39,7 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=64G
 #SBATCH --time=1-00:00
+#SBATCH --partition=cpubase_bycore_b3
 #SBATCH --mail-user=farzanmoosavi368@gmail.com
 #SBATCH --mail-type=ALL
 #SBATCH --output=logs/qrl-%x-%j.out
