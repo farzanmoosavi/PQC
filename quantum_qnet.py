@@ -717,17 +717,19 @@ class QAOANodeQNetwork(nn.Module):
         enc_shape = (self.n_layers, self.n_qubits, 2) if encoding == "ryrz" \
                     else (self.n_layers, self.n_qubits)
         weight_shapes = {
-            "gamma":      (self.n_layers,),          # one scalar per QAOA layer
+            "gamma":      (self.n_layers,),          # one scalar per QAOA layer (ring)
+            "gamma_pair": (self.n_layers,),          # one scalar per QAOA layer (pairs)
             "beta":       (self.n_layers, self.n_qubits),
             "enc_scales": enc_shape,
         }
         dev, _diff = _make_qdevice(self.n_qubits)
         n_q = self.n_qubits
         n_ang = self.n_angles
+        n_node_val = self.n_node   # capture for circuit closure
 
         @qml.qnode(dev, interface="torch", diff_method=_diff)
-        def circuit(inputs, gamma, beta, enc_scales):
-            # inputs layout: [angles (n_ang), ring_dist_norm (n_qubits)]
+        def circuit(inputs, gamma, gamma_pair, beta, enc_scales):
+            # inputs layout: [angles (n_ang), ring_dist_norm (n_q), pair_dist_norm (n_node)]
             if self.h_init:
                 for q in range(n_q):
                     qml.Hadamard(wires=q)
@@ -739,10 +741,17 @@ class QAOANodeQNetwork(nn.Module):
                 else:
                     for q in range(n_q):
                         qml.RY(enc_scales[layer, q] * inputs[..., q], wires=q)
-                # True QAOA cost layer: exp(-i gamma_l d_{q,q+1} Z_q Z_{q+1})
+                # Ring cost layer: exp(-i gamma_l d_{q,q+1} Z_q Z_{q+1})
                 for q in range(n_q):
                     qml.IsingZZ(gamma[layer] * inputs[..., n_ang + q],
                                 wires=[q, (q + 1) % n_q])
+                # Pair cost layer: exp(-i gamma_pair_l d_{pi,di} Z_{pi} Z_{di})
+                # Qubit layout: depot=0, pickups=1..n, deliveries=n+1..2n
+                for i in range(n_node_val):
+                    pickup_q   = i + 1
+                    delivery_q = n_node_val + 1 + i
+                    qml.IsingZZ(gamma_pair[layer] * inputs[..., n_ang + n_q + i],
+                                wires=[pickup_q, delivery_q])
                 for q in range(n_q):
                     qml.RX(beta[layer, q], wires=q)
             z_obs  = [qml.expval(qml.PauliZ(q)) for q in range(n_q)]
@@ -753,6 +762,7 @@ class QAOANodeQNetwork(nn.Module):
         self.qlayer = qml.qnn.TorchLayer(circuit, weight_shapes)
         with torch.no_grad():
             self.qlayer.gamma.normal_(0.0, 0.01)
+            self.qlayer.gamma_pair.normal_(0.0, 0.01)
             self.qlayer.beta.normal_(0.0, 0.01)
             self.qlayer.enc_scales.uniform_(0.8, 1.2)
         self.head = nn.Linear(self.n_outputs, self.n_actions)
@@ -777,12 +787,14 @@ class QAOANodeQNetwork(nn.Module):
                 angles_per_node[..., 1],
             ], dim=1)                                               # (B, 2*n_qubits)
 
-        # Extract ring distances from state coords and normalise to [0, pi].
+        # Extract node coords from state and compute circuit distance inputs.
         n = self.n_node
         cs = 4 + 6 * n
         node_x = state[:, cs          : cs + (2*n+1)]
         node_y = state[:, cs + (2*n+1): cs + 2*(2*n+1)]
         coords = torch.stack([node_x, node_y], dim=-1)             # (B, 2n+1, 2)
+
+        # Ring distances: d(q, q+1) normalised to [0, pi].
         ring_dist = torch.zeros(B, self.n_qubits, device=self.device)
         for q in range(self.n_qubits):
             nq = (q + 1) % self.n_qubits
@@ -790,14 +802,23 @@ class QAOANodeQNetwork(nn.Module):
         max_d = ring_dist.max(dim=1, keepdim=True).values.clamp(min=1e-6)
         ring_dist_norm = ring_dist / max_d * math.pi               # (B, n_qubits)
 
-        circuit_inputs = torch.cat([angles, ring_dist_norm], dim=1)
+        # Pair distances: d(pickup_i, delivery_i) normalised to [0, pi].
+        # Qubit layout: depot=0, pickups=1..n, deliveries=n+1..2n.
+        pair_dist = torch.zeros(B, n, device=self.device)
+        for i in range(n):
+            pair_dist[:, i] = (coords[:, i + 1] - coords[:, n + 1 + i]).norm(dim=-1)
+        max_pd = pair_dist.max(dim=1, keepdim=True).values.clamp(min=1e-6)
+        pair_dist_norm = pair_dist / max_pd * math.pi              # (B, n_node)
+
+        circuit_inputs = torch.cat([angles, ring_dist_norm, pair_dist_norm], dim=1)
         z = self.qlayer(circuit_inputs.cpu())
         z = z.to(self.device).float()
         return self.head(z)
 
     def param_report(self) -> dict:
         def count(m): return sum(p.numel() for p in m.parameters())
-        pqc = int(self.qlayer.gamma.numel() + self.qlayer.beta.numel())
+        pqc = int(self.qlayer.gamma.numel() + self.qlayer.gamma_pair.numel()
+                  + self.qlayer.beta.numel())
         classical = count(self.node_encoder) + count(self.head)
         total = count(self)
         return {
