@@ -22,13 +22,18 @@
 #   sbatch --export=RUNG=I submit.sh              # Rung I: PPO fixed-instance + policy-learning
 #   sbatch --export=RUNG=J submit.sh              # Rung J: tw_tightness sweep [0, 0.5, 1.0]
 #   sbatch --export=RUNG=T submit.sh              # Rung T: smoke-test only
-#   sbatch --export=RUNG=A,EPISODES=500 submit.sh
-#   sbatch --export=RUNG=B,SEEDS="0 1 2 3 4" submit.sh
 #
-# Recommended wall times (override default 24h with --time=HH:MM:SS):
+# ---- Focused thesis experiments (produce one summary CSV each) ----
+#   sbatch --export=RUNG=ARCH    submit.sh        # Exp 1: arch race → arch_race.csv
+#   sbatch --export=RUNG=CIRCUIT submit.sh        # Exp 2: circuit sensitivity → circuit_design.csv
+#   sbatch --export=RUNG=SCALE   submit.sh        # Exp 3: scalability n=3-5 → scalability.csv
+#   sbatch --export=RUNG=ALGO    submit.sh        # Exp 4: DQN/REINFORCE/PPO → algo_comparison.csv
+#
+# Recommended wall times:
 #   T  0:20:00    A  24:00:00    B  22:00:00    C  24:00:00
 #   D  8:00:00    E  24:00:00    F  1:00:00     G  14:00:00   H  24:00:00
 #   I  24:00:00   J  24:00:00
+#   ARCH  1-00:00   CIRCUIT  1-00:00   SCALE  1-00:00   ALGO  1-00:00
 # Example: sbatch --time=1:00:00 --export=RUNG=F submit.sh
 # ============================================================
 
@@ -687,6 +692,361 @@ if [ "$RUNG" = "J" ]; then
 
     echo "Gap CSVs: $OUT_DIR/gap_tw*.csv"
     echo "=== Rung J done: $(date) ==="
+fi
+
+# ============================================================
+# Rung ARCH — Architecture race
+#
+# Every model family vs every time-window tightness level, DQN only.
+# The central comparison table for the thesis: which architecture
+# achieves the best feasibility + gap% with the fewest parameters?
+#
+# Design:
+#   Models : quantum qaoa node-quantum node-qaoa classical classical-large
+#   n      : 3, 4
+#   tw     : 0.0  0.5  1.0
+#   algo   : DQN (train_qrl.py)
+#   seeds  : 0-6  (7 seeds)
+#   eps    : 500
+#   output : arch_race.csv  (one row per model×n×tw)
+#
+# Runtime: ~18h on 32 CPUs  (6 models × 2n × 3tw × 7 seeds × 500 eps)
+# ============================================================
+if [ "$RUNG" = "ARCH" ]; then
+    echo "=== Rung ARCH: architecture race (n=3,4 × tw=0/0.5/1.0, DQN) ==="
+    ARCH_MODELS="quantum qaoa node-quantum node-qaoa classical classical-large"
+    ARCH_SEEDS="${SEEDS:-0 1 2 3 4 5 6}"
+    ARCH_EPS="${EPISODES:-500}"
+    ARCH_CSV="$OUT_DIR/arch_race.csv"
+
+    for N_SIZE in 3 4; do
+        NQ_NAT=$(( 2 * N_SIZE + 1 ))
+        for TW in 0.0 0.5 1.0; do
+            TW_LABEL=$(echo "$TW" | tr '.' 'p')
+            echo "--- n=$N_SIZE  tw=$TW ---"
+            for MODEL in $ARCH_MODELS; do
+                case "$MODEL" in
+                    node-*) MODEL_NQ=$NQ_NAT ;;
+                    *)       MODEL_NQ=$N_QUBITS ;;
+                esac
+                for SEED in $ARCH_SEEDS; do
+                    run_bg "arch_n${N_SIZE}_tw${TW_LABEL}_${MODEL}_s${SEED}" train_qrl.py \
+                        --model "$MODEL" --node "$N_SIZE" --capacity "$CAPACITY" \
+                        --episodes "$ARCH_EPS" \
+                        --n-qubits "$MODEL_NQ" --n-layers "$N_LAYERS" \
+                        --seed "$SEED" --fixed-instance --encoding "$ENCODING" \
+                        --tw-tightness "$TW" \
+                        --out-prefix "$OUT_DIR/arch_n${N_SIZE}_tw${TW_LABEL}"
+                done
+            done
+        done
+    done
+
+    wait_all
+
+    # Gap analysis then analyze.py for each (n, tw) combination.
+    # Flat models load with N_QUBITS; node models ignore --n-qubits.
+    for N_SIZE in 3 4; do
+        NQ_NAT=$(( 2 * N_SIZE + 1 ))
+        for TW in 0.0 0.5 1.0; do
+            TW_LABEL=$(echo "$TW" | tr '.' 'p')
+            TAG="arch_n${N_SIZE}_tw${TW_LABEL}"
+
+            python3 -u gap_analysis.py \
+                --prefix       "$OUT_DIR/arch_n${N_SIZE}_tw${TW_LABEL}" \
+                --models       $ARCH_MODELS \
+                --seeds        $ARCH_SEEDS \
+                --node         "$N_SIZE" --n-qubits "$N_QUBITS" --n-layers "$N_LAYERS" \
+                --encoding     "$ENCODING" --mode fixed \
+                --tw-tightness "$TW" \
+                --out-csv      "$OUT_DIR/gap_arch_n${N_SIZE}_tw${TW_LABEL}.csv" \
+                >> "$OUT_DIR/gap_arch.log" 2>&1
+
+            python3 -u analyze.py \
+                --prefix       "$OUT_DIR/arch_n${N_SIZE}_tw${TW_LABEL}" \
+                --models       $ARCH_MODELS \
+                --seeds        $ARCH_SEEDS \
+                --node         "$N_SIZE" --n-qubits "$N_QUBITS" --n-layers "$N_LAYERS" \
+                --encoding     "$ENCODING" --mode fixed \
+                --tw-tightness "$TW" --algo dqn \
+                --tag          "$TAG" \
+                --out-csv      "$ARCH_CSV" --append \
+                >> "$OUT_DIR/analyze_arch.log" 2>&1
+        done
+    done
+
+    echo "Architecture race CSV: $ARCH_CSV"
+    echo "=== Rung ARCH done: $(date) ==="
+fi
+
+# ============================================================
+# Rung CIRCUIT — Circuit sensitivity: topology × depth × encoding
+#
+# For quantum and qaoa models only.  Sweeps every combination of:
+#   topology : none  ring  brick  star
+#   n_layers : 1  2  3  4
+#   encoding : ry  ryrz
+#   n        : 3  4
+#   seeds    : 0-4  (5 seeds)
+#   eps      : 300  (fast enough to show convergence differences)
+#
+# Output: circuit_design.csv  (one row per model×topology×layers×enc×n)
+#
+# This answers "which circuit design converges fastest for CPDPTW?"
+# and surfaces the entanglement topology that is cheapest in gate count
+# yet still competitive in feasibility + gap%.
+#
+# Runtime: ~14h on 32 CPUs  (2 models × 4 topologies × 4 layers ×
+#          2 encodings × 2n × 5 seeds × 300 eps)
+# ============================================================
+if [ "$RUNG" = "CIRCUIT" ]; then
+    echo "=== Rung CIRCUIT: topology × depth × encoding (n=3,4) ==="
+    CIRC_MODELS="quantum qaoa"
+    CIRC_SEEDS="${SEEDS:-0 1 2 3 4}"
+    CIRC_EPS="${EPISODES:-300}"
+    CIRC_CSV="$OUT_DIR/circuit_design.csv"
+
+    for N_SIZE in 3 4; do
+        NQ_NAT=$(( 2 * N_SIZE + 1 ))
+        for ENT in none ring brick star; do
+            for NLYR in 1 2 3 4; do
+                for ENC in ry ryrz; do
+                    for MODEL in $CIRC_MODELS; do
+                        for SEED in $CIRC_SEEDS; do
+                            run_bg "circ_n${N_SIZE}_${ENT}_l${NLYR}_${ENC}_${MODEL}_s${SEED}" \
+                                train_qrl.py \
+                                --model "$MODEL" --node "$N_SIZE" --capacity "$CAPACITY" \
+                                --episodes "$CIRC_EPS" \
+                                --n-qubits "$N_QUBITS" --n-layers "$NLYR" \
+                                --seed "$SEED" --fixed-instance \
+                                --encoding "$ENC" --entanglement "$ENT" \
+                                --out-prefix "$OUT_DIR/circ_n${N_SIZE}_${ENT}_l${NLYR}_${ENC}"
+                        done
+                    done
+                done
+            done
+        done
+    done
+
+    wait_all
+
+    for N_SIZE in 3 4; do
+        for ENT in none ring brick star; do
+            for NLYR in 1 2 3 4; do
+                for ENC in ry ryrz; do
+                    TAG="circ_n${N_SIZE}_${ENT}_l${NLYR}_${ENC}"
+                    python3 -u analyze.py \
+                        --prefix       "$OUT_DIR/circ_n${N_SIZE}_${ENT}_l${NLYR}_${ENC}" \
+                        --models       $CIRC_MODELS \
+                        --seeds        $CIRC_SEEDS \
+                        --node         "$N_SIZE" --n-qubits "$N_QUBITS" --n-layers "$NLYR" \
+                        --encoding     "$ENC" --entanglement "$ENT" \
+                        --mode fixed --algo dqn \
+                        --tag          "$TAG" \
+                        --out-csv      "$CIRC_CSV" --append \
+                        >> "$OUT_DIR/analyze_circ.log" 2>&1
+                done
+            done
+        done
+    done
+
+    echo "Circuit sensitivity CSV: $CIRC_CSV"
+    echo "=== Rung CIRCUIT done: $(date) ==="
+fi
+
+# ============================================================
+# Rung SCALE — Scalability: node-qaoa vs classical-large at n=3,4,5
+#
+# Tests how each architecture degrades as n grows.
+# Two TW levels (0=loose, 1=tight) expose if TW difficulty amplifies
+# the gap between quantum and classical at larger n.
+#
+# Design:
+#   Models : node-qaoa  classical-large
+#   n      : 3  4  5
+#   tw     : 0.0  1.0
+#   algo   : DQN (train_qrl.py)
+#   seeds  : 0-6  (7 seeds)
+#   eps    : 500 (n=3,4)  /  300 (n=5, slower 11-qubit sim)
+#   output : scalability.csv
+#
+# Runtime: ~20h on 32 CPUs  (2 models × 3n × 2tw × 7 seeds × ~450 eps mean)
+# ============================================================
+if [ "$RUNG" = "SCALE" ]; then
+    echo "=== Rung SCALE: scalability n=3,4,5 (node-qaoa vs classical-large) ==="
+    SCALE_MODELS="node-qaoa classical-large"
+    SCALE_SEEDS="${SEEDS:-0 1 2 3 4 5 6}"
+    SCALE_CSV="$OUT_DIR/scalability.csv"
+    declare -A SCALE_EPS=( [3]=500 [4]=500 [5]=300 )
+
+    for N_SIZE in 3 4 5; do
+        NQ_NAT=$(( 2 * N_SIZE + 1 ))
+        EPS_N=${SCALE_EPS[$N_SIZE]}
+        for TW in 0.0 1.0; do
+            TW_LABEL=$(echo "$TW" | tr '.' 'p')
+            echo "--- n=$N_SIZE  tw=$TW  eps=$EPS_N ---"
+            for MODEL in $SCALE_MODELS; do
+                case "$MODEL" in
+                    node-*) MODEL_NQ=$NQ_NAT ;;
+                    *)       MODEL_NQ=$N_QUBITS ;;
+                esac
+                for SEED in $SCALE_SEEDS; do
+                    run_bg "scale_n${N_SIZE}_tw${TW_LABEL}_${MODEL}_s${SEED}" train_qrl.py \
+                        --model "$MODEL" --node "$N_SIZE" --capacity "$CAPACITY" \
+                        --episodes "$EPS_N" \
+                        --n-qubits "$MODEL_NQ" --n-layers "$N_LAYERS" \
+                        --seed "$SEED" --fixed-instance --encoding "$ENCODING" \
+                        --tw-tightness "$TW" \
+                        --out-prefix "$OUT_DIR/scale_n${N_SIZE}_tw${TW_LABEL}"
+                done
+            done
+        done
+    done
+
+    wait_all
+
+    for N_SIZE in 3 4 5; do
+        NQ_NAT=$(( 2 * N_SIZE + 1 ))
+        for TW in 0.0 1.0; do
+            TW_LABEL=$(echo "$TW" | tr '.' 'p')
+            TAG="scale_n${N_SIZE}_tw${TW_LABEL}"
+
+            python3 -u gap_analysis.py \
+                --prefix       "$OUT_DIR/scale_n${N_SIZE}_tw${TW_LABEL}" \
+                --models       $SCALE_MODELS \
+                --seeds        $SCALE_SEEDS \
+                --node         "$N_SIZE" --n-qubits "$N_QUBITS" --n-layers "$N_LAYERS" \
+                --encoding     "$ENCODING" --mode fixed \
+                --tw-tightness "$TW" \
+                --out-csv      "$OUT_DIR/gap_scale_n${N_SIZE}_tw${TW_LABEL}.csv" \
+                >> "$OUT_DIR/gap_scale.log" 2>&1
+
+            python3 -u analyze.py \
+                --prefix       "$OUT_DIR/scale_n${N_SIZE}_tw${TW_LABEL}" \
+                --models       $SCALE_MODELS \
+                --seeds        $SCALE_SEEDS \
+                --node         "$N_SIZE" --n-qubits "$N_QUBITS" --n-layers "$N_LAYERS" \
+                --encoding     "$ENCODING" --mode fixed \
+                --tw-tightness "$TW" --algo dqn \
+                --tag          "$TAG" \
+                --out-csv      "$SCALE_CSV" --append \
+                >> "$OUT_DIR/analyze_scale.log" 2>&1
+        done
+    done
+
+    echo "Scalability CSV: $SCALE_CSV"
+    echo "=== Rung SCALE done: $(date) ==="
+fi
+
+# ============================================================
+# Rung ALGO — Algorithm comparison: DQN vs REINFORCE vs PPO
+#
+# Fixes architecture (node-qaoa + classical) and varies the RL
+# algorithm over fixed-instance and policy-learning modes.
+# Shows whether the algorithm family matters beyond the model.
+#
+# Design:
+#   Models : node-qaoa  classical
+#   algos  : DQN (train_qrl.py)  REINFORCE (reinforce_qrl.py)
+#             PPO (ppo_qrl.py)
+#   modes  : fixed  policy
+#   n      : 4   (9-qubit node-qaoa)
+#   tw     : 0.0
+#   seeds  : 0-6  (7 seeds)
+#   eps    : 500
+#   output : algo_comparison.csv
+#
+# Runtime: ~22h on 32 CPUs  (2 models × 3 algos × 2 modes × 7 seeds × 500 eps)
+# ============================================================
+if [ "$RUNG" = "ALGO" ]; then
+    echo "=== Rung ALGO: DQN vs REINFORCE vs PPO (node-qaoa + classical, n=4) ==="
+    ALGO_MODELS="node-qaoa classical"
+    ALGO_SEEDS="${SEEDS:-0 1 2 3 4 5 6}"
+    ALGO_EPS="${EPISODES:-500}"
+    ALGO_N=4
+    ALGO_NQ=$(( 2 * ALGO_N + 1 ))   # 9 qubits for node models
+    ALGO_CSV="$OUT_DIR/algo_comparison.csv"
+
+    # --- DQN ---
+    for MODE_FLAG in "--fixed-instance" ""; do
+        [ -n "$MODE_FLAG" ] && MODE_LABEL="fixed" || MODE_LABEL="policy"
+        for MODEL in $ALGO_MODELS; do
+            case "$MODEL" in
+                node-*) MODEL_NQ=$ALGO_NQ ;;
+                *)       MODEL_NQ=$N_QUBITS ;;
+            esac
+            for SEED in $ALGO_SEEDS; do
+                run_bg "algo_dqn_${MODE_LABEL}_${MODEL}_s${SEED}" train_qrl.py \
+                    --model "$MODEL" --node "$ALGO_N" --capacity "$CAPACITY" \
+                    --episodes "$ALGO_EPS" \
+                    --n-qubits "$MODEL_NQ" --n-layers "$N_LAYERS" \
+                    --seed "$SEED" $MODE_FLAG --encoding "$ENCODING" \
+                    --out-prefix "$OUT_DIR/algo_dqn_${MODE_LABEL}"
+            done
+        done
+    done
+
+    # --- REINFORCE ---
+    for MODE_FLAG in "--fixed-instance" ""; do
+        [ -n "$MODE_FLAG" ] && MODE_LABEL="fixed" || MODE_LABEL="policy"
+        for MODEL in $ALGO_MODELS; do
+            case "$MODEL" in
+                node-*) MODEL_NQ=$ALGO_NQ ;;
+                *)       MODEL_NQ=$N_QUBITS ;;
+            esac
+            for SEED in $ALGO_SEEDS; do
+                run_bg "algo_reinforce_${MODE_LABEL}_${MODEL}_s${SEED}" reinforce_qrl.py \
+                    --model "$MODEL" --node "$ALGO_N" --capacity "$CAPACITY" \
+                    --episodes "$ALGO_EPS" \
+                    --n-qubits "$MODEL_NQ" --n-layers "$N_LAYERS" \
+                    --lr "$LR" --entropy "$ENTROPY" \
+                    --seed "$SEED" $MODE_FLAG --encoding "$ENCODING" \
+                    --out-prefix "$OUT_DIR/algo_reinforce_${MODE_LABEL}"
+            done
+        done
+    done
+
+    # --- PPO ---
+    for MODE_FLAG in "--fixed-instance" ""; do
+        [ -n "$MODE_FLAG" ] && MODE_LABEL="fixed" || MODE_LABEL="policy"
+        for MODEL in $ALGO_MODELS; do
+            case "$MODEL" in
+                node-*) MODEL_NQ=$ALGO_NQ ;;
+                *)       MODEL_NQ=$N_QUBITS ;;
+            esac
+            for SEED in $ALGO_SEEDS; do
+                run_bg "algo_ppo_${MODE_LABEL}_${MODEL}_s${SEED}" ppo_qrl.py \
+                    --model "$MODEL" --node "$ALGO_N" --capacity "$CAPACITY" \
+                    --episodes "$ALGO_EPS" \
+                    --n-qubits "$MODEL_NQ" --n-layers "$N_LAYERS" \
+                    --lr "$LR" --entropy "$ENTROPY" \
+                    --seed "$SEED" $MODE_FLAG --encoding "$ENCODING" \
+                    --out-prefix "$OUT_DIR/algo_ppo_${MODE_LABEL}"
+            done
+        done
+    done
+
+    wait_all
+
+    # Analyze each (algo, mode) combination, appending to one CSV
+    for ALGO_NAME in dqn reinforce ppo; do
+        for MODE_LABEL in fixed policy; do
+            TAG="algo_${ALGO_NAME}_${MODE_LABEL}"
+            python3 -u analyze.py \
+                --prefix       "$OUT_DIR/algo_${ALGO_NAME}_${MODE_LABEL}" \
+                --models       $ALGO_MODELS \
+                --seeds        $ALGO_SEEDS \
+                --node         "$ALGO_N" --n-qubits "$ALGO_NQ" --n-layers "$N_LAYERS" \
+                --encoding     "$ENCODING" --mode "$MODE_LABEL" \
+                --tw-tightness 0.0 --algo "$ALGO_NAME" \
+                --tag          "$TAG" \
+                --out-csv      "$ALGO_CSV" --append \
+                >> "$OUT_DIR/analyze_algo.log" 2>&1
+        done
+    done
+
+    echo "Algorithm comparison CSV: $ALGO_CSV"
+    echo "=== Rung ALGO done: $(date) ==="
 fi
 
 # ============================================================
