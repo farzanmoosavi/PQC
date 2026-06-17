@@ -716,7 +716,7 @@ if [ "$RUNG" = "ARCH" ]; then
     echo "=== Rung ARCH: architecture race (n=3,4 × tw=0/0.5/1.0, DQN) ==="
     ARCH_MODELS="quantum qaoa node-quantum node-qaoa classical classical-large"
     ARCH_SEEDS="${SEEDS:-0 1 2 3 4 5 6}"
-    ARCH_EPS="${EPISODES:-500}"
+    ARCH_EPS=500
     ARCH_CSV="$OUT_DIR/arch_race.csv"
 
     for N_SIZE in 3 4; do
@@ -803,7 +803,7 @@ if [ "$RUNG" = "CIRCUIT" ]; then
     echo "=== Rung CIRCUIT: topology × depth × encoding (n=3,4) ==="
     CIRC_MODELS="quantum qaoa"
     CIRC_SEEDS="${SEEDS:-0 1 2 3 4}"
-    CIRC_EPS="${EPISODES:-300}"
+    CIRC_EPS=300
     CIRC_CSV="$OUT_DIR/circuit_design.csv"
 
     for N_SIZE in 3 4; do
@@ -962,7 +962,7 @@ if [ "$RUNG" = "ALGO" ]; then
     echo "=== Rung ALGO: DQN vs REINFORCE vs PPO (node-qaoa + classical, n=4) ==="
     ALGO_MODELS="node-qaoa classical"
     ALGO_SEEDS="${SEEDS:-0 1 2 3 4 5 6}"
-    ALGO_EPS="${EPISODES:-500}"
+    ALGO_EPS=500
     ALGO_N=4
     ALGO_NQ=$(( 2 * ALGO_N + 1 ))   # 9 qubits for node models
     ALGO_CSV="$OUT_DIR/algo_comparison.csv"
