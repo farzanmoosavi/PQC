@@ -657,16 +657,18 @@ if [ "$RUNG" = "J" ]; then
 
     wait_all
 
-    # Gap analysis for each (tightness, node_size) pair
+    # Gap analysis for each (tightness, node_size) pair.
+    # Use N_QUBITS (flat model training width) not NQ (natural width) —
+    # flat models (quantum/qaoa) were trained with N_QUBITS qubits;
+    # node models always ignore this flag and use 2*node+1 internally.
     for TW in 0.0 0.5 1.0; do
         TW_LABEL=$(echo "$TW" | tr '.' 'p')
         for N_SIZE in 3 4; do
-            NQ=$(( 2 * N_SIZE + 1 ))
             python3 -u gap_analysis.py \
                 --prefix       "$OUT_DIR/j_tw${TW_LABEL}_n${N_SIZE}" \
                 --models       $J_MODELS \
                 --seeds        $J_SEEDS \
-                --node         "$N_SIZE" --n-qubits "$NQ" --n-layers "$N_LAYERS" \
+                --node         "$N_SIZE" --n-qubits "$N_QUBITS" --n-layers "$N_LAYERS" \
                 --encoding     "$ENCODING" --mode fixed \
                 --tw-tightness "$TW" \
                 --out-csv      "$OUT_DIR/gap_tw${TW_LABEL}_n${N_SIZE}.csv" \
