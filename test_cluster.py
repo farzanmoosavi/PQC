@@ -176,17 +176,19 @@ def test_forward_classical():
 
 
 def test_enc_scales_init():
-    """enc_scales must start random in [-0.3, 0.3], not all 1.0."""
+    """enc_scales must start in [0.8, 1.2] so the circuit sees the full input signal."""
     from quantum_qnet import QuantumQNetwork, QAOAQNetwork
     env = _make_env()
     for cls in (QuantumQNetwork, QAOAQNetwork):
         net = cls(env, n_qubits=4, n_layers=2)
         val = net.qlayer.enc_scales
-        assert val.abs().max().item() <= 0.31, \
-            f"{cls.__name__} enc_scales out of range [-0.3,0.3]: {val}"
-        assert not torch.allclose(val, torch.ones_like(val)), \
-            f"{cls.__name__} enc_scales still all 1.0 — random init failed"
-    return "enc_scales initialised randomly in [-0.3, 0.3]"
+        assert val.min().item() >= 0.79, \
+            f"{cls.__name__} enc_scales below 0.8: {val}"
+        assert val.max().item() <= 1.21, \
+            f"{cls.__name__} enc_scales above 1.2: {val}"
+        assert not torch.allclose(val, torch.zeros_like(val)), \
+            f"{cls.__name__} enc_scales all zero — init failed"
+    return "enc_scales initialised in [0.8, 1.2]"
 
 
 def test_pair_aware_features():
@@ -521,7 +523,7 @@ def main():
     check("QuantumNodeQNetwork forward", test_forward_node_quantum)
     check("QAOANodeQNetwork forward",    test_forward_node_qaoa)
     check("ClassicalQNetwork forward",   test_forward_classical)
-    check("enc_scales init = 1.0",       test_enc_scales_init)
+    check("enc_scales init [0.8,1.2]",   test_enc_scales_init)
     check("pair-aware 11 features",      test_pair_aware_features)
 
     print("\n[ DQN training loop ]")
