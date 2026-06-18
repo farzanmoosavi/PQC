@@ -295,6 +295,7 @@ def analyze(
     n_qubits: int,
     n_layers: int,
     encoding: str = "ry",
+    entanglement: str = "ring",
     mode: str = "fixed",          # "fixed" | "policy"
     capacity: int = 5,
     out_csv: str = "",
@@ -313,7 +314,7 @@ def analyze(
     ref_label = "exact-B&B" if node <= 5 else "greedy-nn"
     print(f"\n{'='*84}")
     print(f"Gap analysis | node={node} n_qubits={n_qubits} n_layers={n_layers} "
-          f"encoding={encoding} mode={mode}")
+          f"encoding={encoding} entanglement={entanglement} mode={mode}")
     print(f"Reference: {ref_label} (same objective: dist/scale + time-window penalties)")
     print(f"{'='*84}")
     print(f"{'model':12s} {'seed':4s} {'params':7s} {'pqc':6s} "
@@ -357,6 +358,7 @@ def analyze(
                     "n_qubits":     0,
                     "n_layers":     0,
                     "encoding":     encoding,
+                    "entanglement": entanglement,
                     "mode":         mode,
                     "seed":         seed,
                     "total_params": 0,
@@ -381,7 +383,7 @@ def analyze(
                                 tw_tightness=tw_tightness)
                 env.reset(regenerate=True)
                 net = build_net(model, env, n_qubits=n_qubits, n_layers=n_layers,
-                                encoding=encoding)
+                                encoding=encoding, entanglement=entanglement)
                 net.load_state_dict(torch.load(ckpt, map_location='cpu', weights_only=True))
                 net.eval()
             except Exception as e:
@@ -425,6 +427,7 @@ def analyze(
                 "n_qubits":     n_qubits,
                 "n_layers":     n_layers,
                 "encoding":     encoding,
+                "entanglement": entanglement,
                 "mode":         mode,
                 "seed":         seed,
                 "total_params": total_p,
@@ -455,8 +458,10 @@ def _print_summary(rows: list[dict]) -> None:
         by_model[r["model"]].append(r)
 
     enc  = rows[0]["encoding"]
+    ent  = rows[0].get("entanglement", "ring")
     mode = rows[0]["mode"]
-    print(f"\n{'--- Summary: encoding={enc}  mode={mode} ':=<76}")
+    title = f"--- Summary: encoding={enc}  entanglement={ent}  mode={mode} "
+    print(f"\n{title:=<76}")
     print(f"{'model':12s} {'n':3s} {'params':8s} {'pqc':7s} "
           f"{'gap%_mean':10s} {'gap%_std':9s} {'param_eff':10s}")
     print("-" * 76)
@@ -523,6 +528,9 @@ if __name__ == "__main__":
     ap.add_argument("--n-layers",  type=int, default=4)
     ap.add_argument("--encoding",  choices=["ry", "rz", "ryrz"], default="ry",
                     help="Encoding the checkpoint was trained with.")
+    ap.add_argument("--entanglement", choices=["none", "ring", "brick", "all", "star"],
+                    default="ring",
+                    help="Entanglement topology the checkpoint was trained with.")
     ap.add_argument("--mode",      choices=["fixed", "policy"], default="fixed",
                     help="fixed: eval on training instance; "
                          "policy: eval on 20 held-out instances.")
@@ -549,6 +557,7 @@ if __name__ == "__main__":
             n_qubits      = args.n_qubits,
             n_layers      = args.n_layers,
             encoding      = args.encoding,
+            entanglement  = args.entanglement,
             mode          = args.mode,
             capacity      = args.capacity,
             out_csv       = args.out_csv,

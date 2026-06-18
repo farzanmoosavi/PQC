@@ -67,9 +67,11 @@ def load_checkpoint(
     env: CPDPTWEnv,
     n_qubits: int = 6,
     n_layers: int = 3,
+    encoding: str = "ry",
+    entanglement: str = "ring",
 ) -> torch.nn.Module:
     from train_qrl import build_net
-    net = build_net(model_kind, env, n_qubits, n_layers).to(device)
+    net = build_net(model_kind, env, n_qubits, n_layers, encoding, entanglement).to(device)
     net.load_state_dict(torch.load(path, map_location=device))
     net.eval()
     return net
@@ -339,6 +341,8 @@ def compare(
     seed: int = 0,
     n_qubits: int = 6,
     n_layers: int = 3,
+    encoding: str = "ry",
+    entanglement: str = "ring",
     checkpoints: Optional[dict[str, str]] = None,
 ) -> None:
     """
@@ -402,7 +406,10 @@ def compare(
         actual_kind = model_kind.replace("reinforce_", "")
 
         try:
-            net = load_checkpoint(ckpt_path, actual_kind, env, n_qubits, n_layers)
+            net = load_checkpoint(
+                ckpt_path, actual_kind, env, n_qubits, n_layers,
+                encoding=encoding, entanglement=entanglement,
+            )
         except Exception as e:
             print(f"{'  ' + model_kind:20s}  ERROR loading: {e}")
             continue
@@ -478,6 +485,10 @@ if __name__ == "__main__":
     ap.add_argument("--seed",        type=int, default=0)
     ap.add_argument("--n-qubits",    type=int, default=6)
     ap.add_argument("--n-layers",    type=int, default=3)
+    ap.add_argument("--encoding",    choices=["ry", "rz", "ryrz"], default="ry",
+                    help="Qubit encoding used by the checkpoint.")
+    ap.add_argument("--entanglement", choices=["none", "ring", "brick", "all", "star"],
+                    default="ring", help="Entanglement topology used by the checkpoint.")
     ap.add_argument("--checkpoint",  type=str, default=None,
                     help="Path to a single .pt checkpoint to evaluate.")
     ap.add_argument("--model",       type=str, default="quantum",
@@ -495,7 +506,9 @@ if __name__ == "__main__":
     if args.checkpoint:
         # Single checkpoint mode.
         net = load_checkpoint(args.checkpoint, args.model, env,
-                              args.n_qubits, args.n_layers)
+                              args.n_qubits, args.n_layers,
+                              encoding=args.encoding,
+                              entanglement=args.entanglement)
         env.reset(regenerate=False)
         route, reward, dist = greedy_rollout(net, env)
         val = validate_route(env, route)
@@ -528,4 +541,5 @@ if __name__ == "__main__":
     else:
         # Full comparison mode.
         compare(node=args.node, capacity=args.capacity, seed=args.seed,
-                n_qubits=args.n_qubits, n_layers=args.n_layers)
+                n_qubits=args.n_qubits, n_layers=args.n_layers,
+                encoding=args.encoding, entanglement=args.entanglement)
