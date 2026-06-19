@@ -247,6 +247,53 @@ def eval_greedy_policy(net, env: CPDPTWEnv) -> tuple[float, float, bool]:
     return env.total_distance, -total_reward, done
 
 
+def eval_beam_policy(net, env: CPDPTWEnv,
+                     beam_width: int = 3) -> tuple[float, float, bool]:
+    """Beam search rollout keeping top beam_width partial routes at each step.
+
+    At each decision point expands every live beam to its top-beam_width
+    valid actions, then prunes back to beam_width by cumulative reward.
+    Avoids greedy's first-choice commitment while remaining tractable for
+    small n (at most 4*n_total expansions, each copying a lightweight env).
+
+    Returns (total_dist, total_cost, completed) — same interface as
+    eval_greedy_policy so they are drop-in replacements.
+    """
+    import copy
+    device = next(net.parameters()).device
+    state, _ = env.reset(regenerate=False)
+    # Each beam entry: (env_copy, current_state, cumulative_reward, done)
+    beams: list = [(copy.deepcopy(env), state, 0.0, False)]
+
+    for _ in range(4 * env.n_total):
+        if all(b[3] for b in beams):
+            break
+        candidates: list = []
+        for beam_env, beam_state, cum_rew, done in beams:
+            if done:
+                candidates.append((beam_env, beam_state, cum_rew, True))
+                continue
+            mask = beam_env.action_mask()
+            if not mask.any():
+                candidates.append((beam_env, beam_state, cum_rew, True))
+                continue
+            with torch.no_grad():
+                logits = net(beam_state.to(device)).squeeze(0)
+            logits = logits.masked_fill(~mask.to(device), -float('inf'))
+            valid = mask.nonzero(as_tuple=True)[0].tolist()
+            scored = sorted(((logits[a].item(), a) for a in valid), reverse=True)
+            for _, action in scored[:beam_width]:
+                new_env = copy.deepcopy(beam_env)
+                new_state, reward, d, _, _ = new_env.step(action)
+                candidates.append((new_env, new_state, cum_rew + reward.item(), d))
+        candidates.sort(key=lambda x: x[2], reverse=True)
+        beams = candidates[:beam_width]
+
+    completed = [b for b in beams if b[3]]
+    best = max(completed if completed else beams, key=lambda x: x[2])
+    return best[0].total_distance, -best[2], best[3]
+
+
 def eval_random_policy(env: CPDPTWEnv, n_trials: int = 10) -> tuple[float, float, bool]:
     """Uniform random over feasible actions. Returns (mean_dist, mean_cost, mean_done)."""
     import random
@@ -300,6 +347,7 @@ def analyze(
     capacity: int = 5,
     out_csv: str = "",
     tw_tightness: float = 0.0,
+    beam_width: int = 1,          # 1 = greedy argmax; >1 = beam search
 ) -> list[dict]:
     """
     Load checkpoints from {prefix}_{model}_s{seed}.pt, evaluate the greedy
@@ -393,10 +441,13 @@ def analyze(
             total_p = _total_params(net)
             pqc_p   = _pqc_params(net)
 
+            _eval = (lambda n, e: eval_beam_policy(n, e, beam_width)) \
+                    if beam_width > 1 else eval_greedy_policy
+
             if mode == "fixed":
                 # Same instance as training seed.
                 _, ref_dist, ref_cost, _ = reference_solve(env)
-                rl_dist, rl_cost, done = eval_greedy_policy(net, env)
+                rl_dist, rl_cost, done = _eval(net, env)
                 gap = (rl_cost - ref_cost) / max(ref_cost, 1e-6) * 100.0
                 done_str = "Y" if done else "N"
             else:
@@ -407,7 +458,7 @@ def analyze(
                                         rng_seed=es, tw_tightness=tw_tightness)
                     eval_env.reset(regenerate=True)
                     _, ref_d, ref_c, _ = reference_solve(eval_env)
-                    rl_d, rl_c, d = eval_greedy_policy(net, eval_env)
+                    rl_d, rl_c, d = _eval(net, eval_env)
                     gaps.append((rl_c - ref_c) / max(ref_c, 1e-6) * 100.0)
                     ref_dists.append(ref_d); ref_costs.append(ref_c)
                     rl_dists.append(rl_d);  rl_costs.append(rl_c)
@@ -543,6 +594,9 @@ if __name__ == "__main__":
                     help="Number of instances for --solver-only.")
     ap.add_argument("--tw-tightness", type=float, default=0.0,
                     help="Time-window tightness: 0=loose (15-30 min), 1=tight (3-8 min).")
+    ap.add_argument("--beam-width", type=int, default=1,
+                    help="Beam search width at eval time: 1=greedy argmax (default), "
+                         "3=beam search (better routes, ~3x slower).")
     args = ap.parse_args()
 
     if args.solver_only:
@@ -562,4 +616,5 @@ if __name__ == "__main__":
             capacity      = args.capacity,
             out_csv       = args.out_csv,
             tw_tightness  = args.tw_tightness,
+            beam_width    = args.beam_width,
         )

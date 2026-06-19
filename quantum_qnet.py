@@ -686,6 +686,7 @@ class QAOANodeQNetwork(nn.Module):
         n_layers: int = 3,
         encoding: str = "ry",
         h_init: bool = True,
+        depot_terms: bool = False,
         torch_device: Optional[torch.device] = None,
         n_qubits: Optional[int] = None,  # ignored — always 2*node+1
     ):
@@ -693,14 +694,15 @@ class QAOANodeQNetwork(nn.Module):
         if not _HAS_PENNYLANE:
             raise ImportError("pennylane is required for QAOANodeQNetwork.")
 
-        self.n_node    = env.node
-        self.n_actions = env.n_actions
-        self.n_obs     = env.n_observations
-        self.n_qubits  = 2 * env.node + 1
-        self.n_layers  = int(n_layers)
-        self.encoding  = encoding
-        self.h_init    = h_init
-        self.device    = torch_device or (
+        self.n_node      = env.node
+        self.n_actions   = env.n_actions
+        self.n_obs       = env.n_observations
+        self.n_qubits    = 2 * env.node + 1
+        self.n_layers    = int(n_layers)
+        self.encoding    = encoding
+        self.h_init      = h_init
+        self.depot_terms = depot_terms
+        self.device      = torch_device or (
             torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         )
 
@@ -722,42 +724,87 @@ class QAOANodeQNetwork(nn.Module):
             "beta":       (self.n_layers, self.n_qubits),
             "enc_scales": enc_shape,
         }
+        if depot_terms:
+            # gamma_depot: one scalar per layer — scales Z_0 Z_q depot connections
+            weight_shapes["gamma_depot"] = (self.n_layers,)
+
         dev, _diff = _make_qdevice(self.n_qubits)
         n_q = self.n_qubits
         n_ang = self.n_angles
         n_node_val = self.n_node   # capture for circuit closure
+        _depot_terms = depot_terms  # capture bool for circuit definition
 
-        @qml.qnode(dev, interface="torch", diff_method=_diff)
-        def circuit(inputs, gamma, gamma_pair, beta, enc_scales):
-            # inputs layout: [angles (n_ang), ring_dist_norm (n_q), pair_dist_norm (n_node)]
-            if self.h_init:
-                for q in range(n_q):
-                    qml.Hadamard(wires=q)
-            for layer in range(self.n_layers):
-                if self.encoding == "ryrz":
+        if _depot_terms:
+            @qml.qnode(dev, interface="torch", diff_method=_diff)
+            def circuit(inputs, gamma, gamma_pair, gamma_depot, beta, enc_scales):
+                # inputs layout:
+                #   [angles (n_ang), ring_dist (n_q), pair_dist (n_node),
+                #    depot_dist (n_q-1)]   — depot_dist[q-1] = d(depot, qubit q)
+                if self.h_init:
                     for q in range(n_q):
-                        qml.RY(enc_scales[layer, q, 0] * inputs[..., q], wires=q)
-                        qml.RZ(enc_scales[layer, q, 1] * inputs[..., n_q + q], wires=q)
-                else:
+                        qml.Hadamard(wires=q)
+                for layer in range(self.n_layers):
+                    if self.encoding == "ryrz":
+                        for q in range(n_q):
+                            qml.RY(enc_scales[layer, q, 0] * inputs[..., q], wires=q)
+                            qml.RZ(enc_scales[layer, q, 1] * inputs[..., n_q + q], wires=q)
+                    else:
+                        for q in range(n_q):
+                            qml.RY(enc_scales[layer, q] * inputs[..., q], wires=q)
+                    # Ring cost layer
                     for q in range(n_q):
-                        qml.RY(enc_scales[layer, q] * inputs[..., q], wires=q)
-                # Ring cost layer: exp(-i gamma_l d_{q,q+1} Z_q Z_{q+1})
-                for q in range(n_q):
-                    qml.IsingZZ(gamma[layer] * inputs[..., n_ang + q],
-                                wires=[q, (q + 1) % n_q])
-                # Pair cost layer: exp(-i gamma_pair_l d_{pi,di} Z_{pi} Z_{di})
-                # Qubit layout: depot=0, pickups=1..n, deliveries=n+1..2n
-                for i in range(n_node_val):
-                    pickup_q   = i + 1
-                    delivery_q = n_node_val + 1 + i
-                    qml.IsingZZ(gamma_pair[layer] * inputs[..., n_ang + n_q + i],
-                                wires=[pickup_q, delivery_q])
-                for q in range(n_q):
-                    qml.RX(beta[layer, q], wires=q)
-            z_obs  = [qml.expval(qml.PauliZ(q)) for q in range(n_q)]
-            zz_obs = [qml.expval(qml.PauliZ(q) @ qml.PauliZ((q + 1) % n_q))
-                      for q in range(n_q)]
-            return z_obs + zz_obs
+                        qml.IsingZZ(gamma[layer] * inputs[..., n_ang + q],
+                                    wires=[q, (q + 1) % n_q])
+                    # Pair cost layer
+                    for i in range(n_node_val):
+                        pickup_q   = i + 1
+                        delivery_q = n_node_val + 1 + i
+                        qml.IsingZZ(gamma_pair[layer] * inputs[..., n_ang + n_q + i],
+                                    wires=[pickup_q, delivery_q])
+                    # Depot cost layer: Z_0 Z_q weighted by d(depot, node_q)
+                    # depot_dist starts at index n_ang + n_q + n_node_val
+                    for q in range(1, n_q):
+                        qml.IsingZZ(
+                            gamma_depot[layer] * inputs[..., n_ang + n_q + n_node_val + (q - 1)],
+                            wires=[0, q])
+                    for q in range(n_q):
+                        qml.RX(beta[layer, q], wires=q)
+                z_obs  = [qml.expval(qml.PauliZ(q)) for q in range(n_q)]
+                zz_obs = [qml.expval(qml.PauliZ(q) @ qml.PauliZ((q + 1) % n_q))
+                          for q in range(n_q)]
+                return z_obs + zz_obs
+        else:
+            @qml.qnode(dev, interface="torch", diff_method=_diff)
+            def circuit(inputs, gamma, gamma_pair, beta, enc_scales):
+                # inputs layout: [angles (n_ang), ring_dist_norm (n_q), pair_dist_norm (n_node)]
+                if self.h_init:
+                    for q in range(n_q):
+                        qml.Hadamard(wires=q)
+                for layer in range(self.n_layers):
+                    if self.encoding == "ryrz":
+                        for q in range(n_q):
+                            qml.RY(enc_scales[layer, q, 0] * inputs[..., q], wires=q)
+                            qml.RZ(enc_scales[layer, q, 1] * inputs[..., n_q + q], wires=q)
+                    else:
+                        for q in range(n_q):
+                            qml.RY(enc_scales[layer, q] * inputs[..., q], wires=q)
+                    # Ring cost layer: exp(-i gamma_l d_{q,q+1} Z_q Z_{q+1})
+                    for q in range(n_q):
+                        qml.IsingZZ(gamma[layer] * inputs[..., n_ang + q],
+                                    wires=[q, (q + 1) % n_q])
+                    # Pair cost layer: exp(-i gamma_pair_l d_{pi,di} Z_{pi} Z_{di})
+                    # Qubit layout: depot=0, pickups=1..n, deliveries=n+1..2n
+                    for i in range(n_node_val):
+                        pickup_q   = i + 1
+                        delivery_q = n_node_val + 1 + i
+                        qml.IsingZZ(gamma_pair[layer] * inputs[..., n_ang + n_q + i],
+                                    wires=[pickup_q, delivery_q])
+                    for q in range(n_q):
+                        qml.RX(beta[layer, q], wires=q)
+                z_obs  = [qml.expval(qml.PauliZ(q)) for q in range(n_q)]
+                zz_obs = [qml.expval(qml.PauliZ(q) @ qml.PauliZ((q + 1) % n_q))
+                          for q in range(n_q)]
+                return z_obs + zz_obs
 
         self.qlayer = qml.qnn.TorchLayer(circuit, weight_shapes)
         with torch.no_grad():
@@ -765,6 +812,8 @@ class QAOANodeQNetwork(nn.Module):
             self.qlayer.gamma_pair.normal_(0.0, 0.01)
             self.qlayer.beta.normal_(0.0, 0.01)
             self.qlayer.enc_scales.uniform_(0.8, 1.2)
+            if depot_terms:
+                self.qlayer.gamma_depot.normal_(0.0, 0.01)
         self.head = nn.Linear(self.n_outputs, self.n_actions)
         self.to(self.device)
         self.qlayer.to('cpu')   # circuit always runs on CPU (Bug #6)
@@ -810,7 +859,18 @@ class QAOANodeQNetwork(nn.Module):
         max_pd = pair_dist.max(dim=1, keepdim=True).values.clamp(min=1e-6)
         pair_dist_norm = pair_dist / max_pd * math.pi              # (B, n_node)
 
-        circuit_inputs = torch.cat([angles, ring_dist_norm, pair_dist_norm], dim=1)
+        if self.depot_terms:
+            # Depot distances: d(depot, node_q) for q=1..2n, normalised to [0, pi].
+            depot_dist = torch.zeros(B, self.n_qubits - 1, device=self.device)
+            for q in range(1, self.n_qubits):
+                depot_dist[:, q - 1] = (coords[:, 0] - coords[:, q]).norm(dim=-1)
+            max_dd = depot_dist.max(dim=1, keepdim=True).values.clamp(min=1e-6)
+            depot_dist_norm = depot_dist / max_dd * math.pi        # (B, n_qubits-1)
+            circuit_inputs = torch.cat(
+                [angles, ring_dist_norm, pair_dist_norm, depot_dist_norm], dim=1)
+        else:
+            circuit_inputs = torch.cat([angles, ring_dist_norm, pair_dist_norm], dim=1)
+
         z = self.qlayer(circuit_inputs.cpu())
         z = z.to(self.device).float()
         return self.head(z)
@@ -819,6 +879,8 @@ class QAOANodeQNetwork(nn.Module):
         def count(m): return sum(p.numel() for p in m.parameters())
         pqc = int(self.qlayer.gamma.numel() + self.qlayer.gamma_pair.numel()
                   + self.qlayer.beta.numel())
+        if self.depot_terms:
+            pqc += int(self.qlayer.gamma_depot.numel())
         classical = count(self.node_encoder) + count(self.head)
         total = count(self)
         return {

@@ -28,6 +28,8 @@
 #   sbatch --export=RUNG=CIRCUIT submit.sh        # Exp 2: circuit sensitivity → circuit_design.csv
 #   sbatch --export=RUNG=SCALE   submit.sh        # Exp 3: scalability n=3-5 → scalability.csv
 #   sbatch --export=RUNG=ALGO    submit.sh        # Exp 4: DQN/REINFORCE/PPO → algo_comparison.csv
+#   sbatch --export=RUNG=DEEP    submit.sh        # Exp 5: depot Hamiltonian + 6-layer node-quantum
+#   sbatch --time=4:00:00 --export=RUNG=BEAMGAP,ARCH_DIR=results/rungARCH_20260618_1311 submit.sh
 #
 # Recommended wall times:
 #   T  0:20:00    A  24:00:00    B  22:00:00    C  24:00:00
@@ -1117,6 +1119,186 @@ if [ "$RUNG" = "ALGO" ]; then
 
     echo "Algorithm comparison CSV: $ALGO_CSV"
     echo "=== Rung ALGO done: $(date) ==="
+fi
+
+# ============================================================
+# Rung DEEP — Improved architectures: depot Hamiltonian + deeper node-quantum
+#
+# Three improvements over ARCH/ALGO baselines:
+#   1. node-qaoa-depot: extended QAOA Hamiltonian adding depot ZZ terms
+#      Z_0 Z_q (γ_depot) for all non-depot qubits, weighted by d(depot, node).
+#      Encodes the cost of returning to depot into the circuit structure.
+#   2. node-quantum with n_layers=6: deeper HEA for n=4 where ARCH showed
+#      node-quantum as best model — extra depth may close the gap further.
+#   3. classical-large at 1000 episodes: fair comparison baseline.
+#
+# Design:
+#   Group A (prefix deep_depot_n4_tw{TW}):
+#     Models: node-qaoa-depot + classical-large, n_layers=4, 1000 eps
+#   Group B (prefix deep_nq_l6_n4_tw{TW}):
+#     Models: node-quantum, n_layers=6, 1000 eps
+#   n=4, tw=0.0 and tw=1.0, seeds=0-6 (7 seeds)
+#   Gap analysis with beam_width=3 for best results
+#   Output: deep_comparison.csv
+#
+# Usage:
+#   sbatch --export=RUNG=DEEP submit.sh
+#
+# Runtime: ~20h on 32 CPUs
+# ============================================================
+if [ "$RUNG" = "DEEP" ]; then
+    echo "=== Rung DEEP: depot Hamiltonian + deeper node-quantum (n=4) ==="
+    DEEP_SEEDS="0 1 2 3 4 5 6"
+    DEEP_EPS=1000
+    DEEP_N=4
+    DEEP_NQ=$(( 2 * DEEP_N + 1 ))   # 9 qubits for node models
+    DEEP_CSV="$OUT_DIR/deep_comparison.csv"
+
+    for TW in 0.0 1.0; do
+        TW_LABEL=$(echo "$TW" | tr '.' 'p')
+
+        # Group A: node-qaoa-depot (n_layers=4) + classical-large
+        for MODEL in node-qaoa-depot classical-large; do
+            case "$MODEL" in
+                node-*) MODEL_NQ=$DEEP_NQ ;;
+                *)       MODEL_NQ=$N_QUBITS ;;
+            esac
+            for SEED in $DEEP_SEEDS; do
+                run_bg "deep_depot_n${DEEP_N}_tw${TW_LABEL}_${MODEL}_s${SEED}" train_qrl.py \
+                    --model "$MODEL" --node "$DEEP_N" --capacity "$CAPACITY" \
+                    --episodes "$DEEP_EPS" \
+                    --n-qubits "$MODEL_NQ" --n-layers "$N_LAYERS" \
+                    --seed "$SEED" --fixed-instance --encoding "$ENCODING" \
+                    --tw-tightness "$TW" \
+                    --out-prefix "$OUT_DIR/deep_depot_n${DEEP_N}_tw${TW_LABEL}"
+            done
+        done
+
+        # Group B: node-quantum with n_layers=6
+        for SEED in $DEEP_SEEDS; do
+            run_bg "deep_nq_l6_n${DEEP_N}_tw${TW_LABEL}_node-quantum_s${SEED}" train_qrl.py \
+                --model node-quantum --node "$DEEP_N" --capacity "$CAPACITY" \
+                --episodes "$DEEP_EPS" \
+                --n-qubits "$DEEP_NQ" --n-layers 6 \
+                --seed "$SEED" --fixed-instance --encoding "$ENCODING" \
+                --tw-tightness "$TW" \
+                --out-prefix "$OUT_DIR/deep_nq_l6_n${DEEP_N}_tw${TW_LABEL}"
+        done
+    done
+
+    wait_all
+
+    # Gap analysis + analyze.py per group
+    for TW in 0.0 1.0; do
+        TW_LABEL=$(echo "$TW" | tr '.' 'p')
+
+        # Group A gap (n_layers=4, beam_width=3)
+        python3 -u gap_analysis.py \
+            --prefix       "$OUT_DIR/deep_depot_n${DEEP_N}_tw${TW_LABEL}" \
+            --models       node-qaoa-depot classical-large \
+            --seeds        $DEEP_SEEDS \
+            --node         "$DEEP_N" --n-qubits "$N_QUBITS" --n-layers "$N_LAYERS" \
+            --encoding     "$ENCODING" --mode fixed \
+            --tw-tightness "$TW" --beam-width 3 \
+            --out-csv      "$OUT_DIR/gap_deep_depot_n${DEEP_N}_tw${TW_LABEL}.csv" \
+            >> "$OUT_DIR/gap_deep.log" 2>&1
+
+        python3 -u analyze.py \
+            --prefix       "$OUT_DIR/deep_depot_n${DEEP_N}_tw${TW_LABEL}" \
+            --models       node-qaoa-depot classical-large \
+            --seeds        $DEEP_SEEDS \
+            --node         "$DEEP_N" --n-qubits "$N_QUBITS" --n-layers "$N_LAYERS" \
+            --encoding     "$ENCODING" --mode fixed \
+            --tw-tightness "$TW" --algo dqn \
+            --tag          "deep_depot_n${DEEP_N}_tw${TW_LABEL}" \
+            --out-csv      "$DEEP_CSV" --append \
+            >> "$OUT_DIR/analyze_deep.log" 2>&1
+
+        # Group B gap (n_layers=6, beam_width=3)
+        python3 -u gap_analysis.py \
+            --prefix       "$OUT_DIR/deep_nq_l6_n${DEEP_N}_tw${TW_LABEL}" \
+            --models       node-quantum \
+            --seeds        $DEEP_SEEDS \
+            --node         "$DEEP_N" --n-qubits "$DEEP_NQ" --n-layers 6 \
+            --encoding     "$ENCODING" --mode fixed \
+            --tw-tightness "$TW" --beam-width 3 \
+            --out-csv      "$OUT_DIR/gap_deep_nq_l6_n${DEEP_N}_tw${TW_LABEL}.csv" \
+            >> "$OUT_DIR/gap_deep.log" 2>&1
+
+        python3 -u analyze.py \
+            --prefix       "$OUT_DIR/deep_nq_l6_n${DEEP_N}_tw${TW_LABEL}" \
+            --models       node-quantum \
+            --seeds        $DEEP_SEEDS \
+            --node         "$DEEP_N" --n-qubits "$DEEP_NQ" --n-layers 6 \
+            --encoding     "$ENCODING" --mode fixed \
+            --tw-tightness "$TW" --algo dqn \
+            --tag          "deep_nq_l6_n${DEEP_N}_tw${TW_LABEL}" \
+            --out-csv      "$DEEP_CSV" --append \
+            >> "$OUT_DIR/analyze_deep.log" 2>&1
+    done
+
+    echo "Deep comparison CSV: $DEEP_CSV"
+    echo "=== Rung DEEP done: $(date) ==="
+fi
+
+# ============================================================
+# Rung BEAMGAP — Beam search re-evaluation on existing ARCH checkpoints
+#
+# Applies beam_width=3 search at eval time to the trained ARCH checkpoints.
+# No new training — just re-evaluates existing .pt files with a better policy
+# extractor to show the gap between greedy and beam search.
+#
+# Requires: rungARCH_20260618_1311 (or whatever ARCH_DIR points to).
+#
+# Usage:
+#   sbatch --time=4:00:00 \
+#     --export=RUNG=BEAMGAP,ARCH_DIR=results/rungARCH_20260618_1311 \
+#     submit.sh
+#
+# Runtime: ~3h on 32 CPUs (beam search is ~3x slower than greedy)
+# ============================================================
+if [ "$RUNG" = "BEAMGAP" ]; then
+    echo "=== Rung BEAMGAP: beam search (width=3) re-eval on ARCH checkpoints ==="
+    BG_ARCH_DIR="${ARCH_DIR:-results/rungARCH_20260618_1311}"
+    BG_MODELS="quantum qaoa node-quantum node-qaoa classical classical-large"
+    BG_SEEDS="0 1 2 3 4 5 6"
+    BG_CSV="$OUT_DIR/beam_gap_arch.csv"
+
+    for N_SIZE in 3 4; do
+        NQ_NAT=$(( 2 * N_SIZE + 1 ))
+        for TW in 0.0 0.5 1.0; do
+            TW_LABEL=$(echo "$TW" | tr '.' 'p')
+            echo "--- beam gap: n=$N_SIZE  tw=$TW ---"
+            python3 -u gap_analysis.py \
+                --prefix       "$BG_ARCH_DIR/arch_n${N_SIZE}_tw${TW_LABEL}" \
+                --models       $BG_MODELS \
+                --seeds        $BG_SEEDS \
+                --node         "$N_SIZE" --n-qubits "$N_QUBITS" --n-layers "$N_LAYERS" \
+                --encoding     "$ENCODING" --mode fixed \
+                --tw-tightness "$TW" --beam-width 3 \
+                --out-csv      "$OUT_DIR/beam_gap_n${N_SIZE}_tw${TW_LABEL}.csv" \
+                >> "$OUT_DIR/beam_gap.log" 2>&1
+            echo "  -> $OUT_DIR/beam_gap_n${N_SIZE}_tw${TW_LABEL}.csv"
+        done
+    done
+
+    # Merge into one summary
+    python3 - <<'PYEOF' >> "$OUT_DIR/beam_gap.log" 2>&1
+import csv, os, glob
+out_dir = os.environ.get("OUT_DIR", ".")
+rows = []
+for f in sorted(glob.glob(f"{out_dir}/beam_gap_n*.csv")):
+    with open(f) as fh:
+        rows.extend(csv.DictReader(fh))
+if rows:
+    with open(f"{out_dir}/beam_gap_arch.csv", "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+        w.writeheader(); w.writerows(rows)
+    print(f"Merged -> {out_dir}/beam_gap_arch.csv  ({len(rows)} rows)")
+PYEOF
+
+    echo "Beam gap CSV: $BG_CSV"
+    echo "=== Rung BEAMGAP done: $(date) ==="
 fi
 
 # ============================================================

@@ -165,6 +165,10 @@ def build_net(model_kind: str, env, n_qubits: int = 6, n_layers: int = 3,
     elif model_kind == "node-qaoa":
         from quantum_qnet import QAOANodeQNetwork
         return QAOANodeQNetwork(env, n_layers=n_layers, encoding=encoding)
+    elif model_kind == "node-qaoa-depot":
+        from quantum_qnet import QAOANodeQNetwork
+        return QAOANodeQNetwork(env, n_layers=n_layers, encoding=encoding,
+                                depot_terms=True)
     elif model_kind == "classical":
         from quantum_qnet import QuantumQNetwork, ClassicalQNetwork, match_classical_width
         try:
