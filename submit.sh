@@ -695,6 +695,76 @@ if [ "$RUNG" = "J" ]; then
 fi
 
 # ============================================================
+# Rung GAP — Optimality gap + policy evaluation for completed experiments
+#
+# Runs gap_analysis.py on already-trained checkpoints (no new training).
+# Covers ALGO experiment: DQN / REINFORCE / PPO × fixed / policy modes.
+# Policy mode evaluates on 20 held-out instances (seeds 200-219) never
+# seen during training — this is the generalization test.
+#
+# Requires: rungALGO_20260617_1253 checkpoints to exist.
+#
+# Usage:
+#   sbatch --time=3:00:00 \
+#     --export=RUNG=GAP,ALGO_DIR=results/rungALGO_20260617_1253 \
+#     submit.sh
+#
+# Runtime: ~2h on 32 CPUs (2 models × 3 algos × 2 modes × 7 seeds × 20 held-out)
+# ============================================================
+if [ "$RUNG" = "GAP" ]; then
+    echo "=== Rung GAP: gap + policy evaluation on ALGO checkpoints ==="
+    GAP_ALGO_DIR="${ALGO_DIR:-results/rungALGO_20260617_1253}"
+    GAP_MODELS="node-qaoa classical"
+    GAP_SEEDS="0 1 2 3 4 5 6"
+    GAP_N=4
+    GAP_NQ=$(( 2 * GAP_N + 1 ))   # 9 qubits for node-qaoa
+
+    for ALGO_NAME in dqn reinforce ppo; do
+        for MODE_LABEL in fixed policy; do
+            PREFIX="$GAP_ALGO_DIR/algo_${ALGO_NAME}_${MODE_LABEL}"
+            OUT_CSV="$OUT_DIR/gap_algo_${ALGO_NAME}_${MODE_LABEL}.csv"
+            echo "--- gap: $ALGO_NAME / $MODE_LABEL ---"
+            python3 -u gap_analysis.py \
+                --prefix       "$PREFIX" \
+                --models       $GAP_MODELS \
+                --seeds        $GAP_SEEDS \
+                --node         "$GAP_N" --n-qubits "$GAP_NQ" --n-layers "$N_LAYERS" \
+                --encoding     "$ENCODING" --mode "$MODE_LABEL" \
+                --tw-tightness 0.0 \
+                --out-csv      "$OUT_CSV" \
+                >> "$OUT_DIR/gap_algo.log" 2>&1
+            echo "  -> $OUT_CSV"
+        done
+    done
+
+    # Merge all into one summary CSV
+    python3 - <<'PYEOF' >> "$OUT_DIR/gap_algo.log" 2>&1
+import csv, os, glob
+
+out_dir = os.environ.get("OUT_DIR", ".")
+rows = []
+for f in sorted(glob.glob(f"{out_dir}/gap_algo_*.csv")):
+    parts = os.path.basename(f).replace(".csv","").split("_")
+    algo  = parts[2]   # dqn / reinforce / ppo
+    mode  = parts[3]   # fixed / policy
+    with open(f) as fh:
+        for r in csv.DictReader(fh):
+            r["algo"] = algo
+            r["eval_mode"] = mode
+            rows.append(r)
+
+if rows:
+    keys = ["algo","eval_mode"] + [k for k in rows[0] if k not in ("algo","eval_mode")]
+    with open(f"{out_dir}/gap_algo_summary.csv","w",newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=keys)
+        w.writeheader(); w.writerows(rows)
+    print(f"Merged -> {out_dir}/gap_algo_summary.csv  ({len(rows)} rows)")
+PYEOF
+
+    echo "=== Rung GAP done: $(date) ==="
+fi
+
+# ============================================================
 # Rung ARCH — Architecture race
 #
 # Every model family vs every time-window tightness level, DQN only.
